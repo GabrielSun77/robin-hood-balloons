@@ -3,10 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-<meta name="theme-color" content="#15301f">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="mobile-web-app-capable" content="yes">
 <meta name="description" content="羅賓漢射氣球：橫向手機射箭小遊戲，五階蓄力、風雷光特效、十環標靶、共 10 關。">
+<meta name="theme-color" content="#15301f">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="射氣球">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
 <title>羅賓漢射氣球</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Noto+Sans+TC:wght@500;700;900&display=swap">
 <style>
@@ -151,12 +156,7 @@ function startGame(){
   G.level=1; G.score=0; G.arrows=START_ARROWS; G.time=0; G.flying=[]; G.particles=[]; G.popups=[];
   G.charging=false; G.chargeT=0; G.stage=0; G.newRecord=false; G.result=null;
   spawnLevel(1); G.state='play';
-  try{
-    const el=document.documentElement;
-    if(el.requestFullscreen && !document.fullscreenElement){
-      el.requestFullscreen().then(()=>{ if(screen.orientation&&screen.orientation.lock) screen.orientation.lock('landscape').catch(()=>{}); }).catch(()=>{});
-    }
-  }catch(e){}
+  if(canFS && !isFS() && !isStandalone()) enterFS();
 }
 function nextLevel(){
   G.level++; G.arrows+=START_ARROWS; G.flying=[]; G.result=null;
@@ -176,6 +176,25 @@ function pt(e){ const r=cv.getBoundingClientRect(); return {x:(e.clientX-r.left)
 function inRect(p,r){ return p.x>=r.x&&p.x<=r.x+r.w&&p.y>=r.y&&p.y<=r.y+r.h; }
 const startBtn={x:W/2-120, y:H-118, w:240, h:58};
 const muteBtn={x:W-46, y:6, w:40, h:32};
+const fsBtn={x:W-172, y:H-58, w:150, h:40};
+
+/* ---------- fullscreen / standalone ---------- */
+const isIOS=/iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
+const isIPhone=/iPhone|iPod/.test(navigator.userAgent);
+function isStandalone(){ try{ return navigator.standalone===true || matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: fullscreen)').matches; }catch(e){ return false; } }
+function isFS(){ return !!(document.fullscreenElement||document.webkitFullscreenElement); }
+const canFS = !isIPhone && !!(document.fullscreenEnabled||document.webkitFullscreenEnabled);
+function enterFS(){
+  try{
+    const el=document.documentElement;
+    const req=el.requestFullscreen||el.webkitRequestFullscreen;
+    if(!req) return;
+    const r=req.call(el,{navigationUI:'hide'});
+    if(r&&r.then) r.then(()=>{ try{ if(screen.orientation&&screen.orientation.lock) screen.orientation.lock('landscape').catch(()=>{}); }catch(e){} }).catch(()=>{});
+  }catch(e){}
+}
+function exitFS(){ try{ (document.exitFullscreen||document.webkitExitFullscreen).call(document); }catch(e){} }
+function toggleFS(){ isFS()?exitFS():enterFS(); }
 
 function beginCharge(){
   if(G.state!=='play'||G.charging) return;
@@ -201,7 +220,10 @@ cv.addEventListener('pointerdown', e=>{
   e.preventDefault(); ac();
   const p=pt(e);
   if(inRect(p,muteBtn)){ muted=!muted; try{localStorage.setItem('robin_muted',muted?'1':'0');}catch(err){} return; }
-  if(G.state==='title'||G.state==='gameover'||G.state==='victory'){ if(inRect(p,startBtn)) startGame(); return; }
+  if(G.state==='title'||G.state==='gameover'||G.state==='victory'){
+    if(canFS && inRect(p,fsBtn)){ toggleFS(); return; }
+    if(inRect(p,startBtn)) startGame(); return;
+  }
   if(G.state==='play'){ const d=Math.hypot(p.x-BTN.x,p.y-BTN.y); if(d<=BTN.r+22) beginCharge(); }
 });
 addEventListener('pointerup', ()=>fire());
@@ -618,7 +640,13 @@ function draw(t){
     ctx.fillStyle='#2f7a2e'; rrect(startBtn.x,startBtn.y,startBtn.w,startBtn.h,29); ctx.fill();
     ctx.strokeStyle='#ffe066'; ctx.lineWidth=2; rrect(startBtn.x+3,startBtn.y+3,startBtn.w-6,startBtn.h-6,26); ctx.stroke();
     text('開始遊戲', W/2, startBtn.y+startBtn.h/2+1, 24, '#fffbe8', 'center', null, 900);
-    text('橫向遊玩最佳', W/2, H-40, 13, 'rgba(242,227,192,.6)', 'center');
+    let hint='橫向遊玩最佳';
+    if(!isStandalone()){
+      if(isIPhone) hint='想隱藏網址列：在 Safari 點「分享」→「加入主畫面」，從主畫面開啟即為全螢幕';
+      else if(isIOS) hint='想隱藏網址列：點右下「全螢幕」，或以「加入主畫面」安裝後開啟';
+      else if(canFS) hint='開始遊戲會自動進入全螢幕；也可先點右下「全螢幕」';
+    }
+    text(hint, W/2-(canFS?70:0), H-40, 13, 'rgba(242,227,192,.65)', 'center');
   } else if(G.state==='gameover'){
     drawOverlayCard('箭矢用盡', '#b83a2e', [
       {t:G.gameOverReason+'，分數不足以換箭。'},
@@ -635,7 +663,31 @@ function draw(t){
     else if(G.best) lines.push({t:'最佳紀錄：'+G.best.score+' 分 ・ '+fmtTime(G.best.time)+'（同分以用時較短者為準）', s:15, c:'#6b5a44'});
     drawOverlayCard('全數通關', '#2f7a2e', lines, '再玩一次');
   }
-  if(G.state!=='play'&&G.state!=='result'){ drawMuteOnly(); }
+  if(G.state!=='play'&&G.state!=='result'){ drawMuteOnly(); if(canFS) drawFSButton(); }
+}
+function drawFSButton(){
+  const b=fsBtn, fs=isFS();
+  ctx.save();
+  ctx.fillStyle='rgba(12,20,14,.55)'; rrect(b.x,b.y,b.w,b.h,20); ctx.fill();
+  ctx.strokeStyle='rgba(242,227,192,.6)'; ctx.lineWidth=1.5; rrect(b.x,b.y,b.w,b.h,20); ctx.stroke();
+  // corner-bracket glyph
+  const gx=b.x+16, gy=b.y+11, s=18, k=6;
+  ctx.strokeStyle='#f2e3c0'; ctx.lineWidth=2; ctx.lineCap='round';
+  ctx.beginPath();
+  if(!fs){
+    ctx.moveTo(gx,gy+k); ctx.lineTo(gx,gy); ctx.lineTo(gx+k,gy);
+    ctx.moveTo(gx+s-k,gy); ctx.lineTo(gx+s,gy); ctx.lineTo(gx+s,gy+k);
+    ctx.moveTo(gx+s,gy+s-k); ctx.lineTo(gx+s,gy+s); ctx.lineTo(gx+s-k,gy+s);
+    ctx.moveTo(gx+k,gy+s); ctx.lineTo(gx,gy+s); ctx.lineTo(gx,gy+s-k);
+  } else {
+    ctx.moveTo(gx+k,gy); ctx.lineTo(gx+k,gy+k); ctx.lineTo(gx,gy+k);
+    ctx.moveTo(gx+s-k,gy); ctx.lineTo(gx+s-k,gy+k); ctx.lineTo(gx+s,gy+k);
+    ctx.moveTo(gx+s,gy+s-k); ctx.lineTo(gx+s-k,gy+s-k); ctx.lineTo(gx+s-k,gy+s);
+    ctx.moveTo(gx,gy+s-k); ctx.lineTo(gx+k,gy+s-k); ctx.lineTo(gx+k,gy+s);
+  }
+  ctx.stroke();
+  text(fs?'離開全螢幕':'全螢幕', b.x+b.w/2+12, b.y+b.h/2+1, 15, '#f2e3c0', 'center', null, 700);
+  ctx.restore();
 }
 function drawMuteOnly(){
   ctx.fillStyle='rgba(242,227,192,.7)';
