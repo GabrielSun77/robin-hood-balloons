@@ -220,11 +220,22 @@ cv.addEventListener('pointerdown', e=>{
   e.preventDefault(); ac();
   const p=pt(e);
   if(inRect(p,muteBtn)){ muted=!muted; try{localStorage.setItem('robin_muted',muted?'1':'0');}catch(err){} return; }
-  if(G.state==='title'||G.state==='gameover'||G.state==='victory'){
-    if(canFS && inRect(p,fsBtn)){ toggleFS(); return; }
-    if(inRect(p,startBtn)) startGame(); return;
+  if(isMenu()){
+    // 觸控的 pointerdown 不算「使用者啟動」，全螢幕請求必須等到 pointerup 才會被瀏覧器接受
+    menuDown = (canFS && inRect(p,fsBtn)) ? 'fs' : (inRect(p,startBtn) ? 'start' : null);
+    return;
   }
   if(G.state==='play'){ const d=Math.hypot(p.x-BTN.x,p.y-BTN.y); if(d<=BTN.r+22) beginCharge(); }
+});
+let menuDown=null;
+function isMenu(){ return G.state==='title'||G.state==='gameover'||G.state==='victory'; }
+cv.addEventListener('pointerup', e=>{
+  if(isMenu() && menuDown){
+    const p=pt(e);
+    if(menuDown==='fs' && inRect(p,fsBtn)) toggleFS();
+    else if(menuDown==='start' && inRect(p,startBtn)) startGame();
+  }
+  menuDown=null;
 });
 addEventListener('pointerup', ()=>fire());
 addEventListener('pointercancel', ()=>fire());
