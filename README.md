@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/32552399/README.md)
+[README.md](https://github.com/user-attachments/files/32552692/README.md)
 # 羅賓漢射氣球 Robin Hood Balloons
 
 https://gabrielsun77.github.io/robin-hood-balloons/
@@ -43,6 +43,12 @@ https://gabrielsun77.github.io/robin-hood-balloons/
 若要放到 GitHub Pages：把本資料夾內容推到 repo，於 Settings → Pages 選擇分支與根目錄，稍待幾分鐘即可透過 `https://<帳號>.github.io/<repo>/` 遊玩。
 
 桌機測試時可用空白鍵代替按鈕（按住蓄力、放開射箭），數字鍵 1／2／3 對應風／雷／光。
+
+## 測試：從指定關卡開始
+
+- 標題畫面左下角有「起始 第 N 關」的 ◀ ▶ 選關鈕，選好後按開始遊戲即從該關開始。
+- 也可以在網址後面加參數，例如 `index.html?level=16`（GitHub Pages 則是 `https://…/robin-hood-balloons/?level=16`）。
+- 不是從第 1 關開始的回合會顯示「測試模式」，通關後不會登錄最佳紀錄。
 
 ## 手機全螢幕（隱藏網址列）
 
