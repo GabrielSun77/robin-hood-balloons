@@ -69,8 +69,8 @@ const BLADE={score:20, r:15};
 const WISP_FROM=16;
 // 敵人類型：11–15 山賊（燃燒的森林）、16–20 鬼火（火熄後的灰燼森林）
 const ENEMY={
-  bandit:{name:'山賊', unit:'名', scene:'燃燒的森林', speeds:[0,1,2], moveSpeed:lv=>COLORS.red.speed*(1+.06*(lv-1))/2, hitR:BANDIT.ry},
-  wisp:  {name:'鬼火', unit:'隻', scene:'灰燼森林',   speeds:[1,2,3], moveSpeed:lv=>COLORS.blue.speed*(1+.06*(lv-1)),  hitR:22},
+  bandit:{name:'山賊', unit:'名', scene:'燃燒的森林', speeds:[0], moveSpeed:lv=>COLORS.red.speed*(1+.06*(lv-1))/2, hitR:BANDIT.ry},
+  wisp:  {name:'鬼火', unit:'隻', scene:'灰燼森林',   speeds:[0,1], moveSpeed:lv=>COLORS.blue.speed*(1+.06*(lv-1)),  hitR:22},
   boss:  {name:'幻影羅賓漢', unit:'', scene:'月夜的雪伍德', speeds:[0,1,2], moveSpeed:lv=>COLORS.green.speed*(1+.06*(lv-1)), hitR:34},
 };
 const SPEED_TABLE=[640,860,1100,1400,1800];                          // 舊五階射速表，供敵人投射物取速
@@ -366,7 +366,7 @@ function throwBlade(b){
   const sx=b.x-(isWisp?18:22), sy=b.y-(isWisp?0:12);
   const d=Math.hypot(tx-sx, ty-sy)||1;
   const stages=ENEMY[b.kind].speeds;
-  const v=SPEED_TABLE[stages[Math.floor(Math.random()*stages.length)]]; // 山賊 1～3 階、鬼火 2～4 階
+  const v=SPEED_TABLE[stages[Math.floor(Math.random()*stages.length)]]; // 山賊固定 1 階、鬼火 1～2 階隨機
   G.blades.push({type:isWisp?'fire':'blade', x:sx, y:sy, vx:(tx-sx)/d*v, vy:(ty-sy)/d*v, rot:Math.atan2(ty-sy, tx-sx), t:0});
   if(isWisp){ b.state='ready'; b.t=rnd(3,5); tone(300,900,.18,'sine',.06); }                 // 鬼火：每 3～5 秒吐一顆火球
   else { b.state='reload'; b.t=rnd(BANDIT.reloadMin, BANDIT.reloadMax); tone(900,300,.15,'sawtooth',.05); }
