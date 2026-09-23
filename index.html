@@ -269,9 +269,9 @@ function update(dt){
     if(G.target){
       const tg=G.target;
       tg.y+=tg.vy*dt;
-      const top=52+tg.R, bot=H-tg.R-4;
+      const top=52+TG.R, bot=H-TG.R-4;
       if(tg.y<top){ tg.y=top; tg.vy=Math.abs(tg.vy); }
-      if(tg.y>bot){ tg.y=bot; tg.vy=-Math.abs(tg.vy); }
+      else if(tg.y>bot && tg.vy>0){ tg.y=bot; tg.vy=-Math.abs(tg.vy); }
     }
     for(const a of G.flying){
       a.t+=dt;
