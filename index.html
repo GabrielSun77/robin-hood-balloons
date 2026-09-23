@@ -51,12 +51,36 @@
 'use strict';
 (function(){
 const W=960, H=540;
-const RX=96, RY=282, ARROW_Y=RY-10;
+const PLAY_B=466;                 // 遊戲區底邊；以下是控制列（技能、技能珠、放箭按鈕）
+const RS=2/3;                     // 羅賓漢縮放比例
+const RX=96, RY0=282, RY_MIN=52+82*RS, RY_MAX=PLAY_B-66*RS; // 羅賓漢可上下拖移的範圔（腳不會踩進控制列）
 const ZONE={x0:330, x1:915};
 const BR={rx:20, ry:25};
-const TG={x:W-78, R:66};
-const BTN={x:W-98, y:H-98, r:60};
-const START_ARROWS=20, LEVELS=10, ARROW_PRICE=100;
+const TG={x:W-78, R:33};
+const BTN={x:W-64, y:H-37, r:30};
+const START_ARROWS=20, LEVEL_ARROWS=10, LEVELS=21, ARROW_PRICE=100, ORBS=5, MAX_HP=10;
+// 最終關永遠是最後一關（之後在前面加關卡時只要調 LEVELS 與各段起點即可）
+const BOSS={hp:10, x:W-RX, attackEvery:3, skillEvery:3, score:1000, hitScore:50, rx:20, ry:34};
+// 第 11 關起：燃燒的森林與山賊
+const BANDIT_FROM=11;
+const BANDIT_FRONT=Math.round(W*3/5);   // 山賊最前線：從右側算起 2/5 的遊玩區寬度，再往前不會越過
+const BANDIT={score:100, rx:17, ry:30, x0:BANDIT_FRONT, x1:900, yMin:130, yMax:PLAY_B-56, spawnEvery:5, start:2, reloadMin:3, reloadMax:5, step:60};
+const BLADE={score:20, r:15};
+const WISP_FROM=16;
+// 敵人類型：11–15 山賊（燃燒的森林）、16–20 鬼火（火熄後的灰燼森林）
+const ENEMY={
+  bandit:{name:'山賊', unit:'名', scene:'燃燒的森林', speeds:[0,1,2], moveSpeed:lv=>COLORS.red.speed*(1+.06*(lv-1))/2, hitR:BANDIT.ry},
+  wisp:  {name:'鬼火', unit:'隻', scene:'灰燼森林',   speeds:[1,2,3], moveSpeed:lv=>COLORS.blue.speed*(1+.06*(lv-1)),  hitR:22},
+  boss:  {name:'幻影羅賓漢', unit:'', scene:'月夜的雪伍德', speeds:[0,1,2], moveSpeed:lv=>COLORS.green.speed*(1+.06*(lv-1)), hitR:34},
+};
+const SPEED_TABLE=[640,860,1100,1400,1800];                          // 舊五階射速表，供敵人投射物取速
+function enemyKind(lv){ return lv===LEVELS?'boss':(lv>=WISP_FROM?'wisp':(lv>=BANDIT_FROM?'bandit':null)); }
+function isBanditLevel(lv){ return enemyKind(lv)!==null; }           // 廣義：有敵人的關卡
+function blockIndex(lv){ return lv>=WISP_FROM?lv-WISP_FROM:lv-BANDIT_FROM; }
+function banditTotal(lv){ return 10+3*blockIndex(lv); }              // 每段第 1 關 10，之後每關 +3
+function banditCap(lv){ return blockIndex(lv)<=1?3:4; }              // 每段前兩關 3，之後 4
+function banditMoveSpeed(lv){ return ENEMY[enemyKind(lv)].moveSpeed(lv); }
+const ARROW_W=8; // 一支箭的視覺寬度（含箭羽），雷技能判定以此為單位
 
 const COLORS={
   red:   {fill:'#e0453b', light:'#ff9d90', speed:60,  score:10, name:'紅'},
@@ -67,11 +91,16 @@ const COLORS={
 const STAGES=[
   {speed:640,  name:'輕射', color:'#e9e2cf'},
   {speed:860,  name:'穩射', color:'#e9e2cf'},
-  {speed:1100, name:'風',   color:'#5ee07a'},
-  {speed:1400, name:'雷',   color:'#5aa9ff'},
-  {speed:1800, name:'光',   color:'#ffe066'},
+  {speed:1100, name:'強射', color:'#ffd27a'},
 ];
-const STAGE_T=[0, .35, .75, 1.2, 1.7];
+const STAGE_T=[0, .35, .75];
+const SKILLS={
+  wind:   {name:'風', color:'#5ee07a', light:'#c8ffd2', x:58,  speed:1400, desc:'三箭齊發'},
+  thunder:{name:'雷', color:'#5aa9ff', light:'#dff0ff', x:104, speed:1800, desc:'判定加寬'},
+  light:  {name:'光', color:'#ffe066', light:'#fff8d0', x:150, speed:Infinity, desc:'瞬間貫穿'},
+};
+const SKILL_KEYS=['wind','thunder','light'];
+const SK_Y=H-46, SK_R=15, ORB_Y=H-14;
 
 const cv=document.getElementById('c');
 const ctx=cv.getContext('2d');
@@ -118,10 +147,16 @@ const sfx={
 /* ---------- state ---------- */
 const G={
   state:'title', level:1, score:0, arrows:START_ARROWS, time:0,
-  balloons:[], flying:[], particles:[], popups:[], target:null, stuck:null,
+  balloons:[], flying:[], particles:[], popups:[], beams:[], target:null, stuck:null,
   charging:false, chargeT:0, stage:0, result:null, resultT:0, levelIntroT:0,
-  best:null, newRecord:false, ambient:[], gameOverReason:'',
+  best:null, newRecord:false, ambient:[], gameOverReason:'', gameOverTitle:'',
+  hp:MAX_HP, hurtT:0,
+  bandits:[], blades:[], pool:0, spawnT:0,
+  boss:null, ghostArrows:[],
+  orbs:ORBS, armed:null, ry:RY0, drag:null, chargeId:null,
 };
+function AY(){ return G.ry-10*RS; }   // 箭的水平射線高度（隨羅賓漢縮放）
+function refillOrbs(){ G.orbs=ORBS; }
 try{ const b=localStorage.getItem('robin_best'); if(b) G.best=JSON.parse(b); }catch(e){}
 function saveBest(){ try{ localStorage.setItem('robin_best', JSON.stringify(G.best)); }catch(e){} }
 
@@ -135,8 +170,21 @@ function makeBalloon(color,x,y,lv,swayable){
     phase:rnd(0,Math.PI*2), swayAmp: swayable?rnd(4,10):0, sway:0};
 }
 function spawnLevel(lv){
+  G.bandits=[]; G.blades=[]; G.pool=0; G.boss=null; G.ghostArrows=[];
+  if(enemyKind(lv)==='boss'){
+    G.balloons=[]; G.target=null; G.stuck=null; G.levelIntroT=2.2;
+    G.boss={x:BOSS.x, y:RY0, hp:BOSS.hp, t:BOSS.attackEvery+1.5, count:0, mv:0, ty:RY0, pause:1.2, flash:0, bob:0};
+    return;
+  }
+  if(isBanditLevel(lv)){
+    G.balloons=[]; G.target=null; G.stuck=null; G.levelIntroT=1.8;
+    G.pool=banditTotal(lv);
+    for(let i=0;i<BANDIT.start;i++) spawnBandit();
+    G.spawnT=BANDIT.spawnEvery;
+    return;
+  }
   const count=10+5*(lv-1);
-  const P=H+BR.ry*2+10;
+  const P=PLAY_B+BR.ry*2+10;
   let reds=Math.max(3, Math.round(count*.3));
   const rows=Math.ceil(reds/8);
   const list=[];
@@ -144,24 +192,35 @@ function spawnLevel(lv){
   for(let r=0;r<rows;r++){
     const n=Math.min(8,left); left-=n;
     const gap=(ZONE.x1-ZONE.x0)/(n+1);
-    const y=H+BR.ry+ r*(P/rows);
+    const y=PLAY_B+BR.ry+ r*(P/rows);
     for(let i=0;i<n;i++) list.push(makeBalloon('red', ZONE.x0+gap*(i+1), y, lv, false));
   }
   for(let i=0;i<count-reds;i++){
-    list.push(makeBalloon(pick(), rnd(ZONE.x0+BR.rx, ZONE.x1-BR.rx), rnd(BR.ry+60, H+P-BR.ry), lv, true));
+    list.push(makeBalloon(pick(), rnd(ZONE.x0+BR.rx, ZONE.x1-BR.rx), rnd(BR.ry+60, PLAY_B+P-BR.ry), lv, true));
   }
   G.balloons=list; G.target=null; G.stuck=null; G.levelIntroT=1.8;
 }
 function startGame(){
-  G.level=1; G.score=0; G.arrows=START_ARROWS; G.time=0; G.flying=[]; G.particles=[]; G.popups=[];
-  G.charging=false; G.chargeT=0; G.stage=0; G.newRecord=false; G.result=null;
+  G.level=1; G.score=0; G.arrows=START_ARROWS; G.hp=MAX_HP; G.hurtT=0; G.time=0; G.flying=[]; G.particles=[]; G.popups=[]; G.beams=[];
+  G.charging=false; G.chargeT=0; G.stage=0; G.newRecord=false; G.result=null; G.armed=null; G.ry=RY0; G.drag=null; refillOrbs();
   spawnLevel(1); G.state='play';
   if(canFS && !isFS() && !isStandalone()) enterFS();
 }
 function nextLevel(){
-  G.level++; G.arrows+=START_ARROWS; G.flying=[]; G.result=null;
-  addPopup(W/2, H/2-40, '補充 20 支箭', '#ffe066', 1.6, 26);
+  G.level++; G.arrows+=LEVEL_ARROWS; G.flying=[]; G.beams=[]; G.result=null; refillOrbs();
+  const healed=G.hp<MAX_HP; G.hp=Math.min(MAX_HP, G.hp+1);
+  addPopup(W/2, H/2-40, '補充 '+LEVEL_ARROWS+' 支箭 ・ 技能珠補滿'+(healed?' ・ 血量 +1':''), '#ffe066', 1.6, 26);
   spawnLevel(G.level); G.state='play';
+}
+function segmentHitsBalloon(b, x0,y0, x1,y1, halfH){
+  // 把橢圓在 y 方向壓成圓，再算線段到圓心的最短距離
+  const bx=b.x+b.sway, by=b.y, k=b.rx/b.ry;
+  const px0=x0-bx, py0=(y0-by)*k, px1=x1-bx, py1=(y1-by)*k;
+  const dx=px1-px0, dy=py1-py0, L2=dx*dx+dy*dy;
+  let t=L2>0?-(px0*dx+py0*dy)/L2:0; t=Math.max(0,Math.min(1,t));
+  const cx=px0+dx*t, cy=py0+dy*t;
+  const r=b.rx+(halfH||0)*k;
+  return cx*cx+cy*cy<=r*r;
 }
 function addPopup(x,y,text,color,life,size){ G.popups.push({x,y,text,color,life:life||1,t:0,size:size||20}); }
 function burst(x,y,color,n){
@@ -196,25 +255,268 @@ function enterFS(){
 function exitFS(){ try{ (document.exitFullscreen||document.webkitExitFullscreen).call(document); }catch(e){} }
 function toggleFS(){ isFS()?exitFS():enterFS(); }
 
+function ensureArrow(){
+  if(G.arrows>0) return true;
+  if(G.score>=ARROW_PRICE){ G.score-=ARROW_PRICE; G.arrows=1; sfx.buy(); addPopup(W-80, 72, '-100 分 → 1 支箭', '#ffb35c', 1.4, 18); return true; }
+  addPopup(W/2, H/2, '沒有箭了，分數也不足 100', '#ff8a7a', 1.2, 22); return false;
+}
 function beginCharge(){
-  if(G.state!=='play'||G.charging) return;
-  if(G.arrows<=0){
-    if(G.score>=ARROW_PRICE){ G.score-=ARROW_PRICE; G.arrows=1; sfx.buy(); addPopup(W-80, 72, '-100 分 → 1 支箭', '#ffb35c', 1.4, 18); }
-    else { addPopup(W/2, H/2, '沒有箭了，分數也不足 100', '#ff8a7a', 1.2, 22); return; }
-  }
+  if(G.state!=='play'||G.charging) return false;
+  if(!ensureArrow()) return false;
   G.charging=true; G.chargeT=0; G.stage=0; sfx.charge(0);
+  return true;
+}
+function spawnArrow(x,y,ang,v,opts){
+  opts=opts||{};
+  G.flying.push({x, y, ang, v, len:50, hits:0, t:0, stage:opts.stage||0, fx:opts.fx||null, halfH:opts.halfH||0});
 }
 function fire(){
   if(!G.charging) return;
-  G.charging=false;
+  G.charging=false; G.chargeId=null;
   if(G.state!=='play') return;
   if(G.arrows<=0) return;
   G.arrows--;
-  const st=STAGES[G.stage];
-  const hx=RX+30, sx=hx-24*Math.min(1,G.chargeT/STAGE_T[4]);
-  G.flying.push({x:sx, y:ARROW_Y, len:50, v:st.speed, stage:G.stage, hits:0, t:0, trail:[]});
-  sfx.shoot(G.stage);
+  const hx=RX+30*RS, sx=hx-24*RS*Math.min(1,G.chargeT/STAGE_T[STAGE_T.length-1]);
+  const k=G.armed;
+  if(k && G.orbs>0){
+    // 附魔射擊：消耗 1 顆共用技能珠，速度由技能決定
+    G.orbs--; G.armed=null;
+    const sk=SKILLS[k];
+    if(k==='wind'){
+      for(const deg of [0,-15,15]) spawnArrow(sx, AY(), deg*Math.PI/180, sk.speed, {fx:'wind'});
+      sfx.shoot(3);
+    } else if(k==='thunder'){
+      spawnArrow(sx, AY(), 0, sk.speed, {fx:'thunder', halfH:ARROW_W}); // 上下各 +0.5 箭寬 → 總計 2 箭寬
+      sfx.shoot(4);
+    } else if(k==='light'){
+      lightBeam(hx);
+    }
+  } else {
+    spawnArrow(sx, AY(), 0, STAGES[G.stage].speed, {stage:G.stage});
+    sfx.shoot(G.stage);
+  }
   G.chargeT=0; G.stage=0;
+}
+function armSkill(k){
+  // 按下技能只是「附魔」下一箭；再按一次取消、按別的技能則切換。拉弓期間也可以操作。
+  if(G.state!=='play') return;
+  const sk=SKILLS[k];
+  if(G.armed===k){ G.armed=null; tone(420,260,.1,'triangle',.06); return; }
+  if(G.orbs<=0){ tone(200,120,.12,'square',.05); return; }
+  G.armed=k; tone(500,500+SKILL_KEYS.indexOf(k)*120,.12,'triangle',.07);
+}
+function popBalloon(i, arrowLike, atX){
+  const b=G.balloons[i]; const bx=atX!==undefined?atX:(b.x+b.sway);
+  G.balloons.splice(i,1);
+  arrowLike.hits++;
+  const gain=b.score, bonus=arrowLike.hits>1?20*(arrowLike.hits-1):0;
+  G.score+=gain+bonus;
+  burst(bx,b.y,COLORS[b.color].fill,12);
+  addPopup(bx, b.y-30, '+'+gain, COLORS[b.color].light, 1, 22);
+  if(bonus) addPopup(bx, b.y-58, '連穿 ×'+arrowLike.hits+'  +'+bonus, '#ffe066', 1.3, 20);
+  sfx.pop();
+}
+function hitTarget(yc, ang, fx){
+  const dist=Math.abs(yc-G.target.y);
+  const ring=Math.max(1, 10-Math.floor(dist/(TG.R/10)));
+  const reward=ring*50;
+  G.score+=reward;
+  G.stuck={y:yc, ang:ang, fx:fx};
+  G.target.vy=0;
+  G.result={ring, reward}; G.resultT=2.4;
+  burst(TG.x, yc, ring>=9?'#f4c430':(ring>=7?'#d9403a':'#e8e0c8'), 18);
+  sfx.ring(ring);
+  G.state='result';
+}
+function damageRobin(n){
+  // 羅賓漢受到攻擊：扣血、閃紅，歸零即結束遊戲。供之後關卡的敵人／障礙呼叫。
+  if(G.state!=='play') return;
+  n=n||1;
+  G.hp=Math.max(0, G.hp-n); G.hurtT=.5;
+  addPopup(RX+30, G.ry-70*RS, '-'+n, '#ff6b5c', 1, 24);
+  burst(RX, G.ry, '#e0453b', 10);
+  tone(180,60,.25,'sawtooth',.12);
+  if(G.hp<=0){
+    G.charging=false; G.chargeId=null; G.drag=null;
+    G.state='gameover'; G.gameOverTitle='羅賓漢倒下了'; G.gameOverReason='血量歸零。';
+    sfx.over();
+  }
+}
+function spawnBandit(){
+  if(G.pool<=0) return;
+  let x=0,y=0,ok=false;
+  for(let tries=0;tries<12 && !ok;tries++){
+    x=rnd(BANDIT.x0,BANDIT.x1); y=rnd(BANDIT.yMin,BANDIT.yMax); ok=true;
+    for(const o of G.bandits){ if(Math.hypot(o.x-x,o.y-y)<80){ ok=false; break; } }
+  }
+  x=Math.max(BANDIT_FRONT+BANDIT.rx, Math.min(BANDIT.x1, x));
+  G.pool--;
+  G.bandits.push({kind:enemyKind(G.level), x, y, state:'ready', t:rnd(1.0,2.2), appear:0, bob:rnd(0,Math.PI*2), mv:0, ty:y, pause:rnd(.5,1.5)});
+  burst(x, y, enemyKind(G.level)==='wisp'?'rgba(120,220,200,.9)':'rgba(90,70,60,.9)', 8);
+}
+function throwBlade(b){
+  const tx=RX, ty=G.ry-8*RS;                        // 瞄準羅賓漢當下的位置
+  const isWisp=b.kind==='wisp';
+  const sx=b.x-(isWisp?18:22), sy=b.y-(isWisp?0:12);
+  const d=Math.hypot(tx-sx, ty-sy)||1;
+  const stages=ENEMY[b.kind].speeds;
+  const v=SPEED_TABLE[stages[Math.floor(Math.random()*stages.length)]]; // 山賊 1～3 階、鬼火 2～4 階
+  G.blades.push({type:isWisp?'fire':'blade', x:sx, y:sy, vx:(tx-sx)/d*v, vy:(ty-sy)/d*v, rot:Math.atan2(ty-sy, tx-sx), t:0});
+  if(isWisp){ b.state='ready'; b.t=rnd(3,5); tone(300,900,.18,'sine',.06); }                 // 鬼火：每 3～5 秒吐一顆火球
+  else { b.state='reload'; b.t=rnd(BANDIT.reloadMin, BANDIT.reloadMax); tone(900,300,.15,'sawtooth',.05); }
+}
+function killBandit(i, arrowLike){
+  const b=G.bandits[i];
+  G.bandits.splice(i,1);
+  arrowLike.hits++;
+  const gain=BANDIT.score, bonus=arrowLike.hits>1?20*(arrowLike.hits-1):0;
+  G.score+=gain+bonus;
+  if(b.kind==='wisp'){ burst(b.x, b.y, '#7fe8d2', 16); burst(b.x, b.y, '#dffcf5', 8); }
+  else { burst(b.x, b.y, '#8a2f24', 14); burst(b.x, b.y, '#3a2a22', 8); }
+  addPopup(b.x, b.y-46, '+'+gain, '#ffb35c', 1, 22);
+  if(bonus) addPopup(b.x, b.y-74, '連穿 ×'+arrowLike.hits+'  +'+bonus, '#ffe066', 1.3, 20);
+  tone(240,60,.22,'square',.1);
+}
+function destroyBlade(i, arrowLike){
+  const bl=G.blades[i];
+  G.blades.splice(i,1);
+  arrowLike.hits++;
+  const gain=BLADE.score, bonus=arrowLike.hits>1?20*(arrowLike.hits-1):0;
+  G.score+=gain+bonus;
+  burst(bl.x, bl.y, bl.type==='fire'?'#ff8a3a':'#ffd27a', 10);
+  addPopup(bl.x, bl.y-24, '+'+gain, '#fff3b3', .9, 18);
+  if(bonus) addPopup(bl.x, bl.y-48, '連穿 ×'+arrowLike.hits+'  +'+bonus, '#ffe066', 1.2, 18);
+  tone(1400,500,.1,'square',.07);
+}
+function updateBandits(dt){
+  const cap=banditCap(G.level);
+  // 每 5 秒補 1 名直到上限；全滅且尚有存量時立刻補上
+  G.spawnT-=dt;
+  if(G.spawnT<=0){ if(G.bandits.length<cap && G.pool>0) spawnBandit(); G.spawnT=BANDIT.spawnEvery; }
+  if(G.bandits.length===0 && G.pool>0){ for(let i=0;i<Math.min(BANDIT.start,G.pool, cap);i++) spawnBandit(); G.spawnT=BANDIT.spawnEvery; }
+  const spd=banditMoveSpeed(G.level);
+  for(const b of G.bandits){
+    b.appear=Math.min(1,b.appear+dt*3);
+    // 隨機上下移動：一次一格（60px），走完停一下再決定下一步
+    if(b.mv===0){
+      b.pause-=dt;
+      if(b.pause<=0){
+        const r=Math.random(), dir=r<.4?-1:(r<.8?1:0);
+        const ty=Math.max(BANDIT.yMin, Math.min(BANDIT.yMax, b.y+dir*BANDIT.step));
+        let free=dir!==0 && ty!==b.y;
+        if(free) for(const o of G.bandits){ if(o!==b && Math.abs(o.x-b.x)<60 && Math.abs((o.mv?o.ty:o.y)-ty)<70){ free=false; break; } }
+        if(free){ b.mv=dir; b.ty=ty; } else b.pause=rnd(.5,1.5);
+      }
+    } else {
+      b.y+=b.mv*spd*dt;
+      if((b.mv>0 && b.y>=b.ty)||(b.mv<0 && b.y<=b.ty)){ b.y=b.ty; b.mv=0; b.pause=rnd(.6,1.6); }
+    }
+    b.t-=dt;
+    if(b.state==='ready'){ if(b.t<=0) throwBlade(b); }
+    else if(b.t<=0){ b.state='ready'; b.t=rnd(.4,.9); }   // 山賊：拿起新刀，短暫瞄準後投出
+  }
+  const cx=RX, cy=G.ry-6*RS, hitR=34*RS;
+  for(let i=G.blades.length-1;i>=0;i--){
+    const bl=G.blades[i];
+    bl.x+=bl.vx*dt; bl.y+=bl.vy*dt; bl.rot-=8*dt; bl.t+=dt;   // 大刀逆時針旋轉；火球以 t 做火焰閃動
+    if(Math.hypot(bl.x-cx, bl.y-cy)<hitR+10){
+      G.blades.splice(i,1);
+      if(G.hurtT<=0) damageRobin(1);
+      continue;
+    }
+    if(bl.x<-60 || bl.y<-60 || bl.y>H+60 || bl.x>W+60) G.blades.splice(i,1);
+  }
+}
+function bossFire(){
+  const b=G.boss;
+  b.count++;
+  const useSkill = b.count%BOSS.skillEvery===0 ? (Math.random()<.5?'wind':'thunder') : null;   // 每 3 次攻擊用一次風或雷，不會用光
+  const hx=b.x-30*RS, hy=b.y-10*RS;                    // 鏡像後的弓手位置
+  const tx=RX, ty=G.ry-8*RS;
+  const base=Math.atan2(ty-hy, tx-hx);
+  const shoot=(ang,v,fx,halfH)=>{ G.ghostArrows.push({x:hx-Math.cos(ang)*50, y:hy-Math.sin(ang)*50, ang, v, len:50, fx:fx||null, halfH:halfH||0, stage:0, ghost:true, t:0}); };
+  if(useSkill==='wind'){ for(const d of [0,-15,15]) shoot(base+d*Math.PI/180, SKILLS.wind.speed, 'wind', 0); }
+  else if(useSkill==='thunder'){ shoot(base, SKILLS.thunder.speed, 'thunder', ARROW_W); }
+  else shoot(base, SPEED_TABLE[Math.floor(Math.random()*3)], null, 0);
+  b.t=BOSS.attackEvery;
+  tone(useSkill?520:260, 90, .18, 'sawtooth', .07);
+}
+function hurtBoss(n, hx, hy){
+  const b=G.boss; if(!b) return;
+  b.hp=Math.max(0,b.hp-n); b.flash=.3;
+  G.score+=BOSS.hitScore;
+  addPopup(hx, hy-40, '+'+BOSS.hitScore, '#d8b4ff', 1, 20);
+  burst(hx, hy, '#9b6bff', 12);
+  tone(700,200,.12,'square',.08);
+  if(b.hp<=0){
+    G.score+=BOSS.score;
+    burst(b.x, b.y, '#d8b4ff', 40); burst(b.x, b.y-20, '#6b3fbf', 24);
+    addPopup(b.x, b.y-80, '幻影消散  +'+BOSS.score, '#d8b4ff', 2, 28);
+    G.boss=null; G.ghostArrows=[];
+    tone(400,1200,.5,'triangle',.1);
+    // 幻影倒下即結束遊戲，不再出標靶
+    G.charging=false; G.chargeId=null;
+    G.result={boss:true, reward:BOSS.score}; G.resultT=2.6;
+    G.state='result';
+  }
+}
+function updateBoss(dt){
+  const b=G.boss;
+  if(b){
+    if(b.flash>0) b.flash-=dt;
+    b.bob+=dt;
+    // 與其他敵人相同的上下走位：一次一格
+    const spd=ENEMY.boss.moveSpeed(G.level);
+    if(b.mv===0){
+      b.pause-=dt;
+      if(b.pause<=0){
+        const r=Math.random(), dir=r<.4?-1:(r<.8?1:0);
+        const ty=Math.max(BANDIT.yMin, Math.min(BANDIT.yMax, b.y+dir*BANDIT.step));
+        if(dir!==0 && ty!==b.y){ b.mv=dir; b.ty=ty; } else b.pause=rnd(.5,1.2);
+      }
+    } else {
+      b.y+=b.mv*spd*dt;
+      if((b.mv>0 && b.y>=b.ty)||(b.mv<0 && b.y<=b.ty)){ b.y=b.ty; b.mv=0; b.pause=rnd(.4,1.2); }
+    }
+    b.t-=dt; if(b.t<=0) bossFire();
+  }
+  // 幻影的箭：直線飛行，命中羅賓漢扣血
+  const cx=RX, cy=G.ry-6*RS, hitR=34*RS;
+  for(let i=G.ghostArrows.length-1;i>=0;i--){
+    const g=G.ghostArrows[i];
+    g.t+=dt;
+    const c=Math.cos(g.ang), sn=Math.sin(g.ang);
+    g.x+=c*g.v*dt; g.y+=sn*g.v*dt;
+    const tx=g.x+c*g.len, ty=g.y+sn*g.len;
+    if(Math.hypot(tx-cx, ty-cy)<hitR+8+(g.halfH||0)){
+      G.ghostArrows.splice(i,1);
+      if(G.hurtT<=0) damageRobin(1);
+      continue;
+    }
+    if(g.x<-80 || g.y<-80 || g.y>H+80 || g.x>W+80) G.ghostArrows.splice(i,1);
+  }
+}
+function lightBeam(x0){
+  // 光束：瞬間貫穿整條射線，路徑上的氣球全部擊破
+  const beam={hits:0};
+  const order=[];
+  for(let i=0;i<G.balloons.length;i++){ const b=G.balloons[i]; if(Math.abs(AY()-b.y)<=b.ry && b.x+b.sway>=x0-b.rx) order.push(i); }
+  order.sort((p,q)=>(G.balloons[p].x+G.balloons[p].sway)-(G.balloons[q].x+G.balloons[q].sway));
+  const targets=order.map(i=>G.balloons[i]); // 先取物件參考，再逐一移除，連穿計數由左到右
+  for(const b of targets){ const i=G.balloons.indexOf(b); if(i>=0) popBalloon(i, beam); }
+  const bOrder=G.bandits.filter(b=>Math.abs(AY()-b.y)<=BANDIT.ry && b.x>=x0).sort((p,q)=>p.x-q.x);
+  for(const b of bOrder){ const i=G.bandits.indexOf(b); if(i>=0) killBandit(i, beam); }
+  if(G.boss && Math.abs(AY()-G.boss.y)<=BOSS.ry){ beam.hits++; hurtBoss(1, G.boss.x, AY()); }
+  for(let i=G.ghostArrows.length-1;i>=0;i--){ const g=G.ghostArrows[i]; const mx=g.x+Math.cos(g.ang)*25, my=g.y+Math.sin(g.ang)*25; if(Math.abs(AY()-my)<=16 && mx>=x0){ G.ghostArrows.splice(i,1); beam.hits++; G.score+=BLADE.score; burst(mx,my,'#d8b4ff',8); addPopup(mx,my-24,'+'+BLADE.score,'#e8dcff',.9,18); } }
+  const blOrder=G.blades.filter(bl=>Math.abs(AY()-bl.y)<=BLADE.r && bl.x>=x0).sort((p,q)=>p.x-q.x);
+  for(const bl of blOrder){ const i=G.blades.indexOf(bl); if(i>=0) destroyBlade(i, beam); }
+  if(beam.hits>1) addPopup(W/2, AY()-90, '光束貫穿 ×'+beam.hits, '#fff3b3', 1.4, 26);
+  G.beams.push({x0, y:AY(), t:0, life:.45});
+  sfx.shoot(5); setTimeout(()=>tone(1200,1800,.2,'triangle',.08),40);
+  if(G.target && G.state==='play'){
+    const dist=Math.abs(AY()-G.target.y);
+    if(dist<=TG.R) hitTarget(AY(), 0, 'light');
+  }
 }
 cv.addEventListener('pointerdown', e=>{
   e.preventDefault(); ac();
@@ -225,8 +527,27 @@ cv.addEventListener('pointerdown', e=>{
     menuDown = (canFS && inRect(p,fsBtn)) ? 'fs' : (inRect(p,startBtn) ? 'start' : null);
     return;
   }
-  if(G.state==='play'){ const d=Math.hypot(p.x-BTN.x,p.y-BTN.y); if(d<=BTN.r+22) beginCharge(); }
+  if(G.state==='play'){
+    for(const k of SKILL_KEYS){ if(Math.hypot(p.x-SKILLS[k].x, p.y-SK_Y)<=SK_R+9){ armSkill(k); return; } }
+    const d=Math.hypot(p.x-BTN.x,p.y-BTN.y);
+    if(d<=BTN.r+18){ if(beginCharge()) G.chargeId=e.pointerId; return; }
+    // 按住羅賓漢即可上下拖移
+    if(!G.drag && p.y<PLAY_B && p.x>=RX-50*RS-10 && p.x<=RX+70*RS+10 && p.y>=G.ry-85*RS-10 && p.y<=G.ry+75*RS+10){
+      G.drag={id:e.pointerId, off:p.y-G.ry};
+      try{ cv.setPointerCapture(e.pointerId); }catch(err){}
+    }
+  }
 });
+cv.addEventListener('pointermove', e=>{
+  if(G.drag && e.pointerId===G.drag.id){
+    const p=pt(e);
+    G.ry=Math.max(RY_MIN, Math.min(RY_MAX, p.y-G.drag.off));
+  }
+});
+function endPointer(e){
+  if(G.drag && e.pointerId===G.drag.id) G.drag=null;
+  if(G.charging && (G.chargeId===null || e.pointerId===G.chargeId)) fire();
+}
 let menuDown=null;
 function isMenu(){ return G.state==='title'||G.state==='gameover'||G.state==='victory'; }
 cv.addEventListener('pointerup', e=>{
@@ -237,19 +558,22 @@ cv.addEventListener('pointerup', e=>{
   }
   menuDown=null;
 });
-addEventListener('pointerup', ()=>fire());
-addEventListener('pointercancel', ()=>fire());
-addEventListener('keydown', e=>{ if(e.code==='Space'){ e.preventDefault(); if(G.state==='play') beginCharge(); else if(!e.repeat && (G.state==='title'||G.state==='gameover'||G.state==='victory')) startGame(); } });
-addEventListener('keyup', e=>{ if(e.code==='Space') fire(); });
+addEventListener('pointerup', endPointer);
+addEventListener('pointercancel', endPointer);
+addEventListener('keydown', e=>{
+  if(e.code==='Space'){ e.preventDefault(); if(G.state==='play'){ if(beginCharge()) G.chargeId='kb'; } else if(!e.repeat && isMenu()) startGame(); }
+  if(!e.repeat && G.state==='play'){ if(e.key==='1') armSkill('wind'); else if(e.key==='2') armSkill('thunder'); else if(e.key==='3') armSkill('light'); }
+});
+addEventListener('keyup', e=>{ if(e.code==='Space' && G.chargeId==='kb') fire(); });
 cv.addEventListener('contextmenu', e=>e.preventDefault());
 
 /* ---------- update ---------- */
 function update(dt){
-  const P=H+BR.ry*2+10;
+  const P=PLAY_B+BR.ry*2+10;
   const t=G.t;
   // ambient title balloons
   if(G.state!=='play'&&G.state!=='result'){
-    if(G.ambient.length<7 && Math.random()<.02){ const c=['red','blue','green','yellow'][Math.floor(Math.random()*4)]; G.ambient.push(makeBalloon(c, rnd(ZONE.x0,ZONE.x1), H+BR.ry, 1, true)); }
+    if(G.ambient.length<7 && Math.random()<.02){ const c=['red','blue','green','yellow'][Math.floor(Math.random()*4)]; G.ambient.push(makeBalloon(c, rnd(ZONE.x0,ZONE.x1), PLAY_B+BR.ry, 1, true)); }
     for(const b of G.ambient){ b.y-=b.speed*.6*dt; b.sway=Math.sin(t*1.3+b.phase)*b.swayAmp; }
     G.ambient=G.ambient.filter(b=>b.y>-BR.ry);
   }
@@ -269,59 +593,70 @@ function update(dt){
     if(G.target){
       const tg=G.target;
       tg.y+=tg.vy*dt;
-      const top=52+TG.R, bot=H-TG.R-4;
+      const top=52+TG.R, bot=PLAY_B-TG.R-4;
       if(tg.y<top){ tg.y=top; tg.vy=Math.abs(tg.vy); }
       else if(tg.y>bot && tg.vy>0){ tg.y=bot; tg.vy=-Math.abs(tg.vy); }
     }
     for(const a of G.flying){
+      if(a.done) continue;
       a.t+=dt;
-      const prevTip=a.x+a.len;
-      a.x+=a.v*dt;
-      const tip=a.x+a.len;
-      a.trail.push({x:tip,y:a.y}); if(a.trail.length>14) a.trail.shift();
-      // balloons
+      const c=Math.cos(a.ang), s=Math.sin(a.ang);
+      const ptx=a.x+c*a.len, pty=a.y+s*a.len;      // 上一幀箭尖
+      a.x+=c*a.v*dt; a.y+=s*a.v*dt;
+      const tx=a.x+c*a.len, ty=a.y+s*a.len;        // 這一幀箭尖
+      // balloons：箭尖掃過的線段 vs 橢圓（含雷技能的加寬判定）
       for(let i=G.balloons.length-1;i>=0;i--){
-        const b=G.balloons[i], bx=b.x+b.sway;
-        const cx=Math.max(prevTip, Math.min(tip, bx));
-        const dx=(cx-bx)/b.rx, dy=(a.y-b.y)/b.ry;
-        if(dx*dx+dy*dy<=1){
-          G.balloons.splice(i,1);
-          a.hits++;
-          const gain=b.score, bonus=a.hits>1?20*(a.hits-1):0;
-          G.score+=gain+bonus;
-          burst(bx,b.y,COLORS[b.color].fill,12);
-          addPopup(bx, b.y-30, '+'+gain, COLORS[b.color].light, 1, 22);
-          if(bonus) addPopup(bx, b.y-58, '連穿 ×'+a.hits+'  +'+bonus, '#ffe066', 1.3, 20);
-          sfx.pop();
+        if(segmentHitsBalloon(G.balloons[i], ptx,pty, tx,ty, a.halfH)) popBalloon(i, a);
+      }
+      for(let i=G.bandits.length-1;i>=0;i--){
+        const b=G.bandits[i];
+        if(segmentHitsBalloon({x:b.x, sway:0, y:b.y, rx:BANDIT.rx, ry:BANDIT.ry}, ptx,pty, tx,ty, a.halfH)) killBandit(i, a);
+      }
+      for(let i=G.blades.length-1;i>=0;i--){
+        const bl=G.blades[i];
+        if(segmentHitsBalloon({x:bl.x, sway:0, y:bl.y, rx:BLADE.r, ry:BLADE.r}, ptx,pty, tx,ty, a.halfH)) destroyBlade(i, a);
+      }
+      // 幻影的箭：可以被射掉，但我方的箭也會一起消失（不能穿透）
+      for(let i=G.ghostArrows.length-1;i>=0 && !a.dead;i--){
+        const g=G.ghostArrows[i], mx=g.x+Math.cos(g.ang)*25, my=g.y+Math.sin(g.ang)*25;
+        if(segmentHitsBalloon({x:mx, sway:0, y:my, rx:16, ry:16}, ptx,pty, tx,ty, a.halfH)){
+          G.ghostArrows.splice(i,1); a.dead=true; a.hits++;
+          const bonus=a.hits>1?20*(a.hits-1):0; G.score+=BLADE.score+bonus;
+          burst(mx,my,'#d8b4ff',10); addPopup(mx,my-24,'+'+BLADE.score,'#e8dcff',.9,18);
+          tone(1200,400,.1,'square',.07);
         }
       }
-      // target
-      if(G.target && !a.done && prevTip<TG.x && tip>=TG.x){
-        const dist=Math.abs(a.y-G.target.y);
-        if(dist<=TG.R){
-          const ring=Math.max(1, 10-Math.floor(dist/(TG.R/10)));
-          const reward=ring*50;
-          G.score+=reward;
-          a.done=true; a.x=TG.x-a.len;
-          G.stuck={y:a.y, stage:a.stage};
-          G.target.vy=0;
-          G.result={ring, reward}; G.resultT=2.4;
-          burst(TG.x, a.y, ring>=9?'#f4c430':(ring>=7?'#d9403a':'#e8e0c8'), 18);
-          sfx.ring(ring);
-          G.state='result';
+      // 幻影本體：命中扣 1 點血，箭停在他身上
+      if(G.boss && !a.dead && segmentHitsBalloon({x:G.boss.x, sway:0, y:G.boss.y, rx:BOSS.rx, ry:BOSS.ry}, ptx,pty, tx,ty, a.halfH)){
+        a.dead=true; hurtBoss(1, tx, ty);
+      }
+      // target：箭尖跨過靶面 x 時，取交點高度判環
+      if(G.target && G.state==='play' && ptx<TG.x && tx>=TG.x){
+        const yc = pty + (ty-pty)*((TG.x-ptx)/(tx-ptx||1));
+        if(Math.abs(yc-G.target.y)<=TG.R){
+          a.done=true; a.x=TG.x-c*a.len; a.y=yc-s*a.len;
+          hitTarget(yc, a.ang, a.fx);
         }
       }
     }
-    G.flying=G.flying.filter(a=>a.done || a.x<W+20);
-    if(!G.target && G.balloons.length===0 && G.state==='play'){
-      G.target={y:H+TG.R, vy:-(150+G.level*12)};
-      addPopup(W/2, H/2-30, '氣球全部射完！標靶出現', '#ffe066', 1.6, 26);
+    G.flying=G.flying.filter(a=>!a.dead && (a.done || (a.x<W+20 && a.y>-80 && a.y<H+80)));
+    if(G.state==='play' && (G.boss||G.ghostArrows.length)) updateBoss(dt);
+    if(isBanditLevel(G.level) && G.state==='play' && (G.bandits.length>0||G.pool>0)) updateBandits(dt);
+    else if(G.blades.length){ updateBandits(dt); }
+    for(const bm of G.beams) bm.t+=dt;
+    G.beams=G.beams.filter(bm=>bm.t<bm.life);
+    if(!G.target && G.balloons.length===0 && G.bandits.length===0 && G.pool===0 && !G.boss && G.state==='play'){
+      G.target={y:PLAY_B+TG.R, vy:-(150+G.level*12)};
+      addPopup(W/2, H/2-30, (enemyKind(G.level)==='boss'?'幻影消散！':(isBanditLevel(G.level)?ENEMY[enemyKind(G.level)].name+'全數擊退！':'氣球全部射完！'))+'標靶出現', '#ffe066', 1.6, 26);
     }
     // game over check
-    if(G.state==='play' && G.arrows<=0 && !G.charging && G.flying.length===0 && G.score<ARROW_PRICE && (G.balloons.length>0||G.target)){
-      G.state='gameover'; G.gameOverReason=G.balloons.length>0?'場上還有 '+G.balloons.length+' 顆氣球':'標靶還沒被射中';
+    if(G.state==='play' && G.arrows<=0 && !G.charging && G.flying.length===0 && G.score<ARROW_PRICE && (G.balloons.length>0||G.target||G.bandits.length>0||G.pool>0||G.boss)){
+      G.state='gameover'; G.gameOverTitle='箭矢用盡';
+      const left=G.bandits.length+G.pool;
+      G.gameOverReason=(G.balloons.length>0?'場上還有 '+G.balloons.length+' 顆氣球':(G.boss?'幻影羅賓漢還沒被打倒':(left>0?'還有 '+left+' '+ENEMY[enemyKind(G.level)].unit+ENEMY[enemyKind(G.level)].name:'標靶還沒被射中')))+'，分數不足以換箭。';
       sfx.over();
     }
+    if(G.hurtT>0) G.hurtT-=dt;
   }
   if(G.state==='result'){
     G.resultT-=dt;
@@ -349,6 +684,9 @@ function text(s,x,y,size,color,align,font,weight){
 }
 
 function drawBackground(t){
+  if((G.state==='play'||G.state==='result') && enemyKind(G.level)==='boss'){ drawNightBackground(t); return; }
+  if((G.state==='play'||G.state==='result') && enemyKind(G.level)==='wisp'){ drawAshBackground(t); return; }
+  if((G.state==='play'||G.state==='result') && enemyKind(G.level)==='bandit'){ drawBurningBackground(t); return; }
   const sky=ctx.createLinearGradient(0,0,0,H);
   sky.addColorStop(0,'#16294a'); sky.addColorStop(.5,'#6d4a6c'); sky.addColorStop(.82,'#e0925a'); sky.addColorStop(1,'#f0b070');
   ctx.fillStyle=sky; ctx.fillRect(0,0,W,H);
@@ -357,137 +695,447 @@ function drawBackground(t){
   for(let i=0;i<40;i++){ const x=(i*233.7)%W, y=(i*97.3)%180; const tw=.5+.5*Math.sin(t*2+i); ctx.globalAlpha=.3+.5*tw; ctx.fillRect(x,y,2,2); }
   ctx.globalAlpha=1;
   // sun
-  const sun=ctx.createRadialGradient(560,420,10,560,420,140);
+  const sun=ctx.createRadialGradient(560,400,10,560,400,140);
   sun.addColorStop(0,'rgba(255,230,170,.85)'); sun.addColorStop(.25,'rgba(255,200,120,.35)'); sun.addColorStop(1,'rgba(255,180,100,0)');
-  ctx.fillStyle=sun; ctx.fillRect(400,260,320,240);
+  ctx.fillStyle=sun; ctx.fillRect(400,240,320,240);
   // far hills
   ctx.fillStyle='#3d5a5a';
-  ctx.beginPath(); ctx.moveTo(0,440);
-  for(let x=0;x<=W;x+=40){ ctx.lineTo(x, 430-Math.sin(x*.011)*22-Math.cos(x*.03)*8); }
+  ctx.beginPath(); ctx.moveTo(0,420);
+  for(let x=0;x<=W;x+=40){ ctx.lineTo(x, 410-Math.sin(x*.011)*22-Math.cos(x*.03)*8); }
   ctx.lineTo(W,H); ctx.lineTo(0,H); ctx.fill();
   // tree line
   ctx.fillStyle='#1f4030';
   ctx.beginPath(); ctx.moveTo(0,H);
-  for(let x=0;x<=W+30;x+=30){ const h=470-((x*7919)%37)-Math.sin(x*.05)*10; ctx.lineTo(x-15,h+22); ctx.lineTo(x,h); ctx.lineTo(x+15,h+22); }
+  for(let x=0;x<=W+30;x+=30){ const h=446-((x*7919)%37)-Math.sin(x*.05)*10; ctx.lineTo(x-15,h+22); ctx.lineTo(x,h); ctx.lineTo(x+15,h+22); }
   ctx.lineTo(W,H); ctx.fill();
   // ground
-  const gr=ctx.createLinearGradient(0,480,0,H);
+  const gr=ctx.createLinearGradient(0,444,0,PLAY_B);
   gr.addColorStop(0,'#2d6a3a'); gr.addColorStop(1,'#163a22');
-  ctx.fillStyle=gr; ctx.fillRect(0,482,W,H-482);
+  ctx.fillStyle=gr; ctx.fillRect(0,446,W,PLAY_B-446);
   ctx.strokeStyle='rgba(170,220,120,.35)'; ctx.lineWidth=2;
-  for(let i=0;i<60;i++){ const x=(i*61.3)%W, y=486+((i*17)%40); ctx.beginPath(); ctx.moveTo(x,y+10); ctx.lineTo(x+3,y); ctx.stroke(); }
+  for(let i=0;i<60;i++){ const x=(i*61.3)%W, y=448+((i*17)%12); ctx.beginPath(); ctx.moveTo(x,y+10); ctx.lineTo(x+3,y); ctx.stroke(); }
   // big oak behind Robin
   ctx.fillStyle='#0f2a1c'; ctx.fillRect(18,300,26,200);
   ellipse(30,270,70,60); ctx.fill(); ellipse(75,300,50,45); ctx.fill(); ellipse(0,320,55,50); ctx.fill();
   // mound
-  ctx.fillStyle='#2f6b3c'; ellipse(RX, RY+66, 70, 14); ctx.fill();
+  ctx.fillStyle='#2f6b3c'; ellipse(RX, G.ry+66*RS, 70*RS, 14*RS); ctx.fill();
+  ctx.fillStyle='#24552f'; ellipse(RX, G.ry+70*RS, 62*RS, 8*RS); ctx.fill();
 }
 
-function drawArrowShape(x,y,len,stage,t,glow){
-  const st=STAGES[stage];
+function drawBurningBackground(t){
+  // 天空：煙霧瀰漫、地平線被火光染紅
+  const sky=ctx.createLinearGradient(0,0,0,PLAY_B);
+  sky.addColorStop(0,'#120608'); sky.addColorStop(.45,'#3a1210'); sky.addColorStop(.8,'#8a2e14'); sky.addColorStop(1,'#d8641e');
+  ctx.fillStyle=sky; ctx.fillRect(0,0,W,H);
+  // 火光脈動
+  const glow=ctx.createRadialGradient(W*.55,PLAY_B-20,20,W*.55,PLAY_B-20,420);
+  const pul=.75+.25*Math.sin(t*3.1)+.1*Math.sin(t*7.3);
+  glow.addColorStop(0,'rgba(255,150,60,'+(.45*pul)+')'); glow.addColorStop(1,'rgba(255,90,20,0)');
+  ctx.fillStyle=glow; ctx.fillRect(0,0,W,PLAY_B);
+  // 遠山
+  ctx.fillStyle='#24100c';
+  ctx.beginPath(); ctx.moveTo(0,420);
+  for(let x=0;x<=W;x+=40){ ctx.lineTo(x, 410-Math.sin(x*.011)*22-Math.cos(x*.03)*8); }
+  ctx.lineTo(W,PLAY_B); ctx.lineTo(0,PLAY_B); ctx.fill();
+  // 燒焦樹林＋火焰
+  ctx.fillStyle='#0b0504';
+  ctx.beginPath(); ctx.moveTo(0,PLAY_B);
+  for(let x=0;x<=W+30;x+=30){ const h=446-((x*7919)%37)-Math.sin(x*.05)*10; ctx.lineTo(x-15,h+22); ctx.lineTo(x,h); ctx.lineTo(x+15,h+22); }
+  ctx.lineTo(W,PLAY_B); ctx.fill();
+  for(let x=15;x<=W;x+=60){
+    const h=446-((x*7919)%37)-Math.sin(x*.05)*10;
+    const f=Math.sin(t*9+x)*.5+.5, f2=Math.sin(t*13+x*.7)*.5+.5;
+    ctx.globalAlpha=.85;
+    ctx.fillStyle='#ff7a1a'; ctx.beginPath(); ctx.moveTo(x-10,h+18); ctx.quadraticCurveTo(x-6,h-4-f*10,x,h-18-f*16); ctx.quadraticCurveTo(x+6,h-4-f2*10,x+10,h+18); ctx.closePath(); ctx.fill();
+    ctx.fillStyle='#ffd24a'; ctx.beginPath(); ctx.moveTo(x-5,h+16); ctx.quadraticCurveTo(x-2,h+2-f2*6,x,h-6-f*10); ctx.quadraticCurveTo(x+2,h+2-f*6,x+5,h+16); ctx.closePath(); ctx.fill();
+    ctx.globalAlpha=1;
+  }
+  // 焦土
+  const gr=ctx.createLinearGradient(0,444,0,PLAY_B);
+  gr.addColorStop(0,'#4a2416'); gr.addColorStop(1,'#1c0d08');
+  ctx.fillStyle=gr; ctx.fillRect(0,446,W,PLAY_B-446);
+  ctx.strokeStyle='rgba(255,140,40,.45)'; ctx.lineWidth=2;
+  for(let i=0;i<40;i++){ const x=(i*61.3+ (i%3)*7)%W, y=450+((i*17)%12); ctx.globalAlpha=.3+.5*(Math.sin(t*5+i)*.5+.5); ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+6,y+1); ctx.stroke(); }
+  ctx.globalAlpha=1;
+  // 煙
+  for(let i=0;i<4;i++){
+    const x=((t*18+i*260)%(W+300))-150, y=90+i*70+Math.sin(t*.7+i)*12;
+    ctx.fillStyle='rgba(20,10,8,.28)'; ellipse(x,y,120,34); ctx.fill(); ellipse(x+60,y-18,70,26); ctx.fill();
+  }
+  // 火星（程序式，不需狀態）
+  for(let i=0;i<45;i++){
+    const sp=40+(i*37)%50, ph=i*1.7;
+    const y=PLAY_B-((t*sp+i*97)%(PLAY_B-40));
+    const x=(i*211.7)%W+Math.sin(t*1.5+ph)*18;
+    const a=Math.max(0, 1-(PLAY_B-y)/(PLAY_B-40));
+    ctx.globalAlpha=.3+.7*a; ctx.fillStyle=i%3?'#ffb03a':'#ff6a2a'; ctx.fillRect(x,y,2.2,2.2);
+  }
+  ctx.globalAlpha=1;
+  // 羅賓漢後方的焦黑橡樹
+  ctx.fillStyle='#070302'; ctx.fillRect(18,300,26,200);
+  ellipse(30,270,70,60); ctx.fill(); ellipse(75,300,50,45); ctx.fill(); ellipse(0,320,55,50); ctx.fill();
+  ctx.fillStyle='rgba(255,120,40,'+(.5+.3*Math.sin(t*6))+')'; ellipse(60,262,4,3); ctx.fill(); ellipse(98,290,3,2.5); ctx.fill();
+  // 立足處
+  ctx.fillStyle='#3a2418'; ellipse(RX, G.ry+66*RS, 70*RS, 14*RS); ctx.fill();
+  ctx.fillStyle='#24140c'; ellipse(RX, G.ry+70*RS, 62*RS, 8*RS); ctx.fill();
+}
+function drawAshBackground(t){
+  // 火熄之後：灰白的煙霾天空、焦黑的樹、飄落的灰
+  const sky=ctx.createLinearGradient(0,0,0,PLAY_B);
+  sky.addColorStop(0,'#1c1f24'); sky.addColorStop(.55,'#4a4b4e'); sky.addColorStop(1,'#8a857c');
+  ctx.fillStyle=sky; ctx.fillRect(0,0,W,H);
+  // 殘餘微光
+  const glow=ctx.createRadialGradient(W*.5,PLAY_B-10,10,W*.5,PLAY_B-10,360);
+  glow.addColorStop(0,'rgba(255,170,110,.14)'); glow.addColorStop(1,'rgba(255,170,110,0)');
+  ctx.fillStyle=glow; ctx.fillRect(0,0,W,PLAY_B);
+  // 遠山
+  ctx.fillStyle='#3a3a3c';
+  ctx.beginPath(); ctx.moveTo(0,420);
+  for(let x=0;x<=W;x+=40){ ctx.lineTo(x, 410-Math.sin(x*.011)*22-Math.cos(x*.03)*8); }
+  ctx.lineTo(W,PLAY_B); ctx.lineTo(0,PLAY_B); ctx.fill();
+  // 焦黑枯樹（只剩枝幹）
+  ctx.strokeStyle='#15110f'; ctx.lineCap='round';
+  for(let x=20;x<=W;x+=48){
+    const h=440-((x*7919)%37)-Math.sin(x*.05)*10, lean=((x*31)%7-3)*.6;
+    ctx.lineWidth=4; ctx.beginPath(); ctx.moveTo(x,PLAY_B); ctx.lineTo(x+lean*3,h); ctx.stroke();
+    ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(x+lean*1.5,h+22); ctx.lineTo(x+lean*1.5-12,h+8); ctx.moveTo(x+lean*2,h+14); ctx.lineTo(x+lean*2+11,h-2); ctx.stroke();
+  }
+  ctx.fillStyle='#1a1614';
+  ctx.beginPath(); ctx.moveTo(0,PLAY_B);
+  for(let x=0;x<=W+30;x+=30){ const h=456-((x*7919)%23); ctx.lineTo(x-15,h+10); ctx.lineTo(x,h); ctx.lineTo(x+15,h+10); }
+  ctx.lineTo(W,PLAY_B); ctx.fill();
+  // 灰燼地面，零星未滅的餘火
+  const gr=ctx.createLinearGradient(0,446,0,PLAY_B);
+  gr.addColorStop(0,'#6a655c'); gr.addColorStop(1,'#3a3733');
+  ctx.fillStyle=gr; ctx.fillRect(0,446,W,PLAY_B-446);
+  for(let i=0;i<10;i++){ const x=(i*97.3+40)%W, y=452+((i*13)%10); ctx.globalAlpha=.25+.5*(Math.sin(t*3+i*2)*.5+.5); ctx.fillStyle='#ff7a2a'; ctx.fillRect(x,y,3,1.5); }
+  ctx.globalAlpha=1;
+  // 煙霾
+  for(let i=0;i<5;i++){
+    const x=((t*12+i*230)%(W+300))-150, y=70+i*60+Math.sin(t*.5+i)*10;
+    ctx.fillStyle='rgba(120,118,112,.22)'; ellipse(x,y,140,30); ctx.fill(); ellipse(x+70,y-14,80,22); ctx.fill();
+  }
+  // 飄落的灰
+  for(let i=0;i<60;i++){
+    const sp=14+(i*37)%22, ph=i*1.7;
+    const y=((t*sp+i*131)%(PLAY_B+20))-10;
+    const x=(i*173.3)%W+Math.sin(t*.9+ph)*26;
+    ctx.globalAlpha=.35+.35*(Math.sin(t*2+ph)*.5+.5); ctx.fillStyle=i%4?'#cfc9bd':'#8f8a80'; ctx.fillRect(x,y,2,2);
+  }
+  ctx.globalAlpha=1;
+  // 羅賓漢後方燒剩的橡樹
+  ctx.fillStyle='#120e0c'; ctx.fillRect(18,300,26,200);
+  ctx.strokeStyle='#120e0c'; ctx.lineWidth=7; ctx.beginPath(); ctx.moveTo(30,310); ctx.lineTo(-10,260); ctx.moveTo(30,300); ctx.lineTo(70,250); ctx.moveTo(30,320); ctx.lineTo(95,300); ctx.stroke();
+  // 立足處
+  ctx.fillStyle='#4a4640'; ellipse(RX, G.ry+66*RS, 70*RS, 14*RS); ctx.fill();
+  ctx.fillStyle='#2e2b27'; ellipse(RX, G.ry+70*RS, 62*RS, 8*RS); ctx.fill();
+}
+function drawWisp(b,t){
+  const x=b.x, y=b.y+Math.sin(t*2.6+b.bob)*4, k=b.appear;
+  const fl=Math.sin(t*11+b.bob)*.5+.5, fl2=Math.sin(t*17+b.bob*2)*.5+.5;
+  ctx.save(); ctx.translate(x,y); ctx.scale(k,k);
+  ctx.shadowColor='#7fe8d2'; ctx.shadowBlur=22;
+  // 外焰
+  ctx.fillStyle='rgba(90,210,190,.55)';
+  ctx.beginPath(); ctx.moveTo(-20,10); ctx.quadraticCurveTo(-24,-14-fl*8,-6,-26-fl2*10); ctx.quadraticCurveTo(0,-36-fl*12,6,-24-fl2*8); ctx.quadraticCurveTo(24,-12-fl2*8,20,10); ctx.quadraticCurveTo(0,26,-20,10); ctx.fill();
+  // 內焰
+  ctx.fillStyle='rgba(200,255,245,.9)';
+  ctx.beginPath(); ctx.moveTo(-11,8); ctx.quadraticCurveTo(-13,-8-fl2*5,-3,-16-fl*6); ctx.quadraticCurveTo(0,-22-fl2*6,3,-15-fl*5); ctx.quadraticCurveTo(13,-6-fl*5,11,8); ctx.quadraticCurveTo(0,18,-11,8); ctx.fill();
+  ctx.shadowBlur=0;
+  // 眼睛（面向左）
+  ctx.fillStyle='#1a3a3a'; ellipse(-7,-4,3,4); ctx.fill(); ellipse(2,-4,3,4); ctx.fill();
+  ctx.fillStyle='#dffcf5'; ellipse(-8,-5,1,1.2); ctx.fill(); ellipse(1,-5,1,1.2); ctx.fill();
+  // 嘴
+  ctx.strokeStyle='#1a3a3a'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.arc(-3,4,4,.2,Math.PI-.2); ctx.stroke();
+  ctx.restore();
+  // 火球吐出前的預兆：嘴前微亮
+  if(b.state==='ready' && b.t<.5){ ctx.save(); ctx.globalAlpha=(.5-b.t)*1.6; ctx.fillStyle='#ffb35c'; ctx.shadowColor='#ff8a3a'; ctx.shadowBlur=14; ellipse(x-18,y,5,5); ctx.fill(); ctx.restore(); }
+}
+function drawFireball(bl){
+  const ang=Math.atan2(bl.vy,bl.vx);
+  ctx.save(); ctx.translate(bl.x,bl.y); ctx.rotate(ang);
+  // 焰尾：往後方拖出數段漸淡的火焰
+  for(let i=1;i<=6;i++){
+    const f=Math.sin(bl.t*30+i*1.3)*.5+.5;
+    const px=-i*11, r=10-i*1.3+f*2;
+    ctx.globalAlpha=.7-i*.1;
+    ctx.fillStyle=i<3?'#ffd24a':(i<5?'#ff8a3a':'#c8401a');
+    ellipse(px, (f-.5)*4, r*1.4, r*.8); ctx.fill();
+  }
+  ctx.globalAlpha=1;
+  ctx.shadowColor='#ff8a3a'; ctx.shadowBlur=18;
+  const g=ctx.createRadialGradient(2,-2,2,0,0,13);
+  g.addColorStop(0,'#fff6d0'); g.addColorStop(.5,'#ffb03a'); g.addColorStop(1,'#e0451a');
+  ctx.fillStyle=g; ellipse(0,0,13,13); ctx.fill();
+  ctx.restore();
+}
+function drawSaber(len){
+  // 以 (0,0) 為刀柄末端，刀身朝 +x；由呼叫端旋轉
   ctx.save();
-  if(stage>=4){ ctx.shadowColor=st.color; ctx.shadowBlur=glow?22:14; }
-  else if(stage===3){ ctx.shadowColor=st.color; ctx.shadowBlur=10; }
-  // shaft
-  ctx.strokeStyle=stage>=4?'#fff2b0':'#d2a86c'; ctx.lineWidth=3.2; ctx.lineCap='round';
+  ctx.lineCap='round';
+  ctx.strokeStyle='#4a2c18'; ctx.lineWidth=5; ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(10,0); ctx.stroke();      // 柄
+  ctx.fillStyle='#c9a24a'; ctx.fillRect(9,-5,3,10);                                                              // 護手
+  ctx.fillStyle='#d8dde2'; ctx.beginPath();                                                                         // 刀身（彎刀）
+  ctx.moveTo(12,-3); ctx.quadraticCurveTo(len*.6,-9,len,-13); ctx.quadraticCurveTo(len*.75,-1,len*.55,3); ctx.lineTo(12,3); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle='rgba(255,170,80,.7)'; ctx.lineWidth=1.2; ctx.beginPath(); ctx.moveTo(14,-1); ctx.quadraticCurveTo(len*.6,-6,len-3,-11); ctx.stroke();
+  ctx.restore();
+}
+function drawBandit(b,t){
+  const S=RS*.95, x=b.x, y=b.y;
+  const bob=Math.sin(t*2.2+b.bob)*1.2;
+  ctx.save();
+  ctx.translate(x,y+bob); ctx.scale(S*b.appear,S*b.appear);
+  // 焦木立足處
+  ctx.fillStyle='#2a170e'; ellipse(0,64,40,9); ctx.fill(); ctx.fillStyle='#1a0e08'; ellipse(0,67,34,5); ctx.fill();
+  ctx.fillStyle='rgba(0,0,0,.3)'; ellipse(0,62,30,6); ctx.fill();
+  // 腿與靴（面向左）
+  ctx.fillStyle='#3a2a2a'; ctx.fillRect(-14,22,12,34); ctx.fillRect(3,22,12,34);
+  ctx.fillStyle='#1a1212'; rrect(-19,50,17,11,3); ctx.fill(); rrect(0,50,17,11,3); ctx.fill();
+  // 身體：無袖皮背心＋腰帶
+  ctx.fillStyle='#8a5a3c'; ctx.beginPath(); ctx.moveTo(-19,-14); ctx.lineTo(19,-14); ctx.lineTo(24,28); ctx.lineTo(-24,28); ctx.closePath(); ctx.fill();
+  ctx.fillStyle='#5a3324'; ctx.fillRect(-6,-14,12,42);
+  ctx.fillStyle='#2a1a12'; ctx.fillRect(-23,10,46,7); ctx.fillStyle='#c9a24a'; ctx.fillRect(-4,9,8,9);
+  // 手臂（皮膚較深）
+  ctx.strokeStyle='#c98a5e'; ctx.lineWidth=8; ctx.lineCap='round';
+  if(b.state==='ready'){
+    // 持刀手向前（左）舉起
+    ctx.beginPath(); ctx.moveTo(-12,-6); ctx.lineTo(-30,-14); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(12,-6); ctx.lineTo(20,14); ctx.stroke();
+    ctx.save(); ctx.translate(-30,-14); ctx.rotate(-Math.PI*.62); drawSaber(42); ctx.restore();
+  } else {
+    // 伸手到背後拿刀
+    ctx.beginPath(); ctx.moveTo(-12,-6); ctx.lineTo(-22,12); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(12,-6); ctx.lineTo(24,-24); ctx.stroke();
+    ctx.save(); ctx.translate(26,-26); ctx.rotate(-Math.PI*.55); ctx.globalAlpha=.85; drawSaber(30); ctx.restore();
+  }
+  // 頭：頭巾、鬍子、刀疤、眼罩
+  ctx.fillStyle='#c98a5e'; ellipse(-1,-32,14,15); ctx.fill();
+  ctx.fillStyle='#3a2418'; ctx.beginPath(); ctx.moveTo(-14,-24); ctx.quadraticCurveTo(-1,-12,13,-24); ctx.lineTo(13,-30); ctx.lineTo(-14,-30); ctx.closePath(); ctx.fill(); // 鬍子
+  ctx.fillStyle='#b0302a'; ctx.beginPath(); ctx.ellipse(-1,-41,15,8,0,Math.PI,0); ctx.fill(); ctx.fillRect(-16,-42,30,5);              // 頭巾
+  ctx.beginPath(); ctx.moveTo(12,-40); ctx.lineTo(24,-34); ctx.lineTo(20,-44); ctx.closePath(); ctx.fill();                                // 頭巾結
+  ctx.fillStyle='#2a1d12'; ellipse(-7,-33,1.8,2.2); ctx.fill();                                                                             // 眼
+  ctx.strokeStyle='#8a2f24'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.moveTo(4,-38); ctx.lineTo(8,-26); ctx.stroke();                       // 刀疤
+  ctx.fillStyle='#c9a24a'; ellipse(13,-28,2,2.5); ctx.fill();                                                                               // 耳環
+  ctx.restore();
+}
+function drawBlade(bl){
+  ctx.save(); ctx.translate(bl.x,bl.y); ctx.rotate(bl.rot);
+  ctx.shadowColor='rgba(255,140,60,.8)'; ctx.shadowBlur=8;
+  ctx.translate(-20,6); drawSaber(44);
+  ctx.restore();
+}
+function drawArrowShape(x,y,len,fx,stage,ghost){
+  // 以 (x,y) 為箭尾，向 +x 方向畫一支長 len 的箭；角度由呼叫端的 ctx.rotate 決定
+  const sk=fx?SKILLS[fx]:null;
+  ctx.save();
+  if(ghost){ ctx.shadowColor='#9b6bff'; ctx.shadowBlur=12; }
+  if(sk){ ctx.shadowColor=sk.color; ctx.shadowBlur=14; }
+  ctx.strokeStyle=ghost?'#b79cff':(sk?'#f4efe0':'#d2a86c'); ctx.lineWidth=3.2; ctx.lineCap='round';
   ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+len-10,y); ctx.stroke();
-  // head
-  ctx.fillStyle=stage>=4?'#fff8d0':'#c5d0d8';
+  ctx.fillStyle=ghost?'#e8dcff':(sk?sk.light:'#c5d0d8');
   ctx.beginPath(); ctx.moveTo(x+len,y); ctx.lineTo(x+len-13,y-4.5); ctx.lineTo(x+len-13,y+4.5); ctx.closePath(); ctx.fill();
-  // fletching
-  ctx.fillStyle=stage>=2?st.color:'#efe6cf';
+  ctx.fillStyle=sk?sk.color:(ghost?'#6b3fbf':STAGES[stage||0].color);
   ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+10,y-6); ctx.lineTo(x+14,y-1); ctx.closePath(); ctx.fill();
   ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+10,y+6); ctx.lineTo(x+14,y+1); ctx.closePath(); ctx.fill();
   ctx.restore();
 }
 function drawArrowFX(a,t){
-  const st=STAGES[a.stage], x=a.x, y=a.y, len=a.len;
+  const len=a.len;
   ctx.save();
+  ctx.translate(a.x,a.y); ctx.rotate(a.ang);
   // motion streak
-  if(a.trail.length>2){
-    ctx.strokeStyle=a.stage>=2?st.color:'rgba(255,255,255,.5)'; ctx.globalAlpha=.35; ctx.lineWidth=2;
-    ctx.beginPath(); ctx.moveTo(a.trail[0].x-len,y); ctx.lineTo(x,y); ctx.stroke(); ctx.globalAlpha=1;
-  }
-  if(a.stage===2){ // wind
-    ctx.strokeStyle=st.color; ctx.lineWidth=2.2; ctx.shadowColor=st.color; ctx.shadowBlur=8;
+  ctx.strokeStyle=a.fx?SKILLS[a.fx].color:(a.ghost?'rgba(155,107,255,.7)':'rgba(255,255,255,.5)'); ctx.globalAlpha=.35; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(-46,0); ctx.lineTo(0,0); ctx.stroke(); ctx.globalAlpha=1;
+  if(a.fx==='wind'){
+    const c=SKILLS.wind.color;
+    ctx.strokeStyle=c; ctx.lineWidth=2.2; ctx.shadowColor=c; ctx.shadowBlur=8;
     for(let k=0;k<2;k++){
       ctx.globalAlpha=.85-k*.3;
       ctx.beginPath();
-      for(let i=0;i<=22;i++){ const px=x-30+i*((len+30)/22); const py=y+Math.sin(i*.55+t*28+k*Math.PI)*(9-k*2); i?ctx.lineTo(px,py):ctx.moveTo(px,py); }
+      for(let i=0;i<=22;i++){ const px=-30+i*((len+30)/22); const py=Math.sin(i*.55+t*28+k*Math.PI)*(9-k*2); i?ctx.lineTo(px,py):ctx.moveTo(px,py); }
       ctx.stroke();
     }
-    ctx.globalAlpha=.7; ctx.fillStyle=st.color;
-    for(let i=0;i<5;i++){ const px=x-10-i*14-((t*300)%14), py=y+Math.sin(t*10+i)*12; ellipse(px,py,4,2); ctx.fill(); }
-  } else if(a.stage===3){ // lightning
-    ctx.strokeStyle=st.color; ctx.lineWidth=2; ctx.shadowColor=st.color; ctx.shadowBlur=12;
+    ctx.globalAlpha=.7; ctx.fillStyle=c;
+    for(let i=0;i<5;i++){ const px=-10-i*14-((t*300)%14), py=Math.sin(t*10+i)*12; ellipse(px,py,4,2); ctx.fill(); }
+  } else if(a.fx==='thunder'){
+    const c=SKILLS.thunder.color, hh=a.halfH||ARROW_W;
+    // 加寬判定範圍的可視化：一條半透明藍色帶
+    ctx.fillStyle='rgba(90,169,255,.16)'; ctx.fillRect(-26,-hh-2,len+30,hh*2+4);
+    ctx.strokeStyle=c; ctx.lineWidth=2; ctx.shadowColor=c; ctx.shadowBlur=12;
     for(let k=0;k<2;k++){
       ctx.globalAlpha=k?.5:.95;
-      ctx.beginPath(); ctx.moveTo(x-22,y);
-      for(let i=1;i<=10;i++){ const px=x-22+i*((len+22)/10); const py=y+(Math.random()-.5)*(14+k*8); ctx.lineTo(px,py); }
+      ctx.beginPath(); ctx.moveTo(-22,0);
+      for(let i=1;i<=10;i++){ const px=-22+i*((len+22)/10); const py=(Math.random()-.5)*(hh*2+k*6); ctx.lineTo(px,py); }
       ctx.stroke();
     }
-    if(Math.random()<.5){ ctx.globalAlpha=.9; ctx.beginPath(); const bx=x+rnd(0,len); ctx.moveTo(bx,y); ctx.lineTo(bx+rnd(-10,10),y+rnd(-22,22)); ctx.stroke(); }
+    if(Math.random()<.5){ ctx.globalAlpha=.9; ctx.beginPath(); const bx=rnd(0,len); ctx.moveTo(bx,0); ctx.lineTo(bx+rnd(-10,10),rnd(-hh*2,hh*2)); ctx.stroke(); }
     ctx.globalAlpha=1; ctx.fillStyle='#dff0ff';
-    for(let i=0;i<3;i++){ ctx.fillRect(x-30-i*12+rnd(-3,3), y+rnd(-8,8), 3, 3); }
-  } else if(a.stage===4){ // light
-    ctx.shadowColor=st.color; ctx.shadowBlur=26;
-    const g=ctx.createLinearGradient(x-90,0,x+len,0);
-    g.addColorStop(0,'rgba(255,224,102,0)'); g.addColorStop(1,'rgba(255,240,170,.9)');
-    ctx.fillStyle=g; ctx.beginPath(); ctx.moveTo(x-90,y); ctx.lineTo(x,y-9); ctx.lineTo(x+len-8,y-3); ctx.lineTo(x+len-8,y+3); ctx.lineTo(x,y+9); ctx.closePath(); ctx.fill();
-    ctx.strokeStyle='rgba(255,240,170,.8)'; ctx.lineWidth=1.5;
-    for(let i=0;i<6;i++){ const ang=t*9+i*Math.PI/3; const cx=x+len*.6, r1=12, r2=30+8*Math.sin(t*20+i); ctx.beginPath(); ctx.moveTo(cx+Math.cos(ang)*r1,y+Math.sin(ang)*r1); ctx.lineTo(cx+Math.cos(ang)*r2,y+Math.sin(ang)*r2); ctx.stroke(); }
-    ctx.fillStyle='rgba(255,250,220,.95)'; ellipse(x+len-6,y,7,7); ctx.fill();
+    for(let i=0;i<3;i++){ ctx.fillRect(-30-i*12+rnd(-3,3), rnd(-hh,hh), 3, 3); }
   }
+  ctx.shadowBlur=0; ctx.globalAlpha=1;
+  drawArrowShape(0,0,len,a.fx,a.stage,a.ghost);
   ctx.restore();
-  drawArrowShape(x,y,len,a.stage,t,true);
+}
+function drawBeams(t){
+  for(const bm of G.beams){
+    const k=bm.t/bm.life, a=1-k;
+    ctx.save();
+    ctx.globalAlpha=a;
+    ctx.shadowColor=SKILLS.light.color; ctx.shadowBlur=30;
+    const g=ctx.createLinearGradient(bm.x0,0,W,0);
+    g.addColorStop(0,'rgba(255,240,170,.95)'); g.addColorStop(1,'rgba(255,224,102,.75)');
+    const h=3+14*(1-k)*(1-k);
+    ctx.fillStyle=g; ctx.fillRect(bm.x0, bm.y-h/2, W-bm.x0, h);
+    ctx.fillStyle='rgba(255,255,255,.95)'; ctx.fillRect(bm.x0, bm.y-1, W-bm.x0, 2);
+    // 起點閃光
+    ctx.fillStyle='rgba(255,250,220,.9)'; ellipse(bm.x0, bm.y, 10+30*k, 10+30*k); ctx.fill();
+    ctx.restore();
+  }
+}
+function drawBar(){
+  const g=ctx.createLinearGradient(0,PLAY_B,0,H);
+  g.addColorStop(0,'#2a1c12'); g.addColorStop(1,'#160f09');
+  ctx.fillStyle=g; ctx.fillRect(0,PLAY_B,W,H-PLAY_B);
+  ctx.fillStyle='rgba(224,178,74,.55)'; ctx.fillRect(0,PLAY_B,W,2);
+  ctx.fillStyle='rgba(0,0,0,.35)'; ctx.fillRect(0,PLAY_B+2,W,3);
+}
+function drawSkills(t){
+  for(const k of SKILL_KEYS){
+    const sk=SKILLS[k], x=sk.x, y=SK_Y, lit=G.armed===k, usable=G.orbs>0;
+    ctx.save();
+    ctx.fillStyle='rgba(0,0,0,.35)'; ellipse(x+2,y+3,SK_R,SK_R); ctx.fill();
+    if(lit){
+      const g=ctx.createRadialGradient(x-4,y-5,2,x,y,SK_R);
+      g.addColorStop(0,sk.light); g.addColorStop(1,sk.color);
+      ctx.fillStyle=g; ctx.shadowColor=sk.color; ctx.shadowBlur=16+6*Math.sin(t*8);
+      ellipse(x,y,SK_R,SK_R); ctx.fill(); ctx.shadowBlur=0;
+      ctx.strokeStyle='#fffbe8'; ctx.lineWidth=2; ellipse(x,y,SK_R-1.5,SK_R-1.5); ctx.stroke();
+      text(sk.name, x, y+1, 14, '#2a180a', 'center', null, 900);
+    } else {
+      ctx.globalAlpha=usable?.7:.4;
+      ctx.fillStyle='#2a180a'; ellipse(x,y,SK_R,SK_R); ctx.fill();
+      ctx.strokeStyle=sk.color; ctx.lineWidth=1.5; ctx.globalAlpha=usable?.55:.3; ellipse(x,y,SK_R-1.5,SK_R-1.5); ctx.stroke();
+      text(sk.name, x, y+1, 14, sk.color, 'center', null, 900);
+    }
+    ctx.restore();
+  }
+  // 共用技能珠：三個技能合計 5 次
+  const cx=SKILLS.thunder.x, sp=14;
+  for(let i=0;i<ORBS;i++){
+    const ox=cx-(ORBS-1)*sp/2+i*sp;
+    // 剩餘＝金色，用掉＝灰色；不再另外標示「下一發會消耗的珠子」
+    ctx.fillStyle=i<G.orbs?'#e0b24a':'#6f6a62';
+    ellipse(ox,ORB_Y,4,4); ctx.fill();
+  }
 }
 
+const PAL_ROBIN={tights:'#6a4630', boots:'#3b2416', tunic:'#3f8f3d', tunicDark:'#2f7a2e', belt:'#5a3a1c', buckle:'#e0b24a', quiver:'#7a4a22', shaft:'#d2a86c', skin:'#f1c9a2', hair:'#7a4a22', eye:'#2a1d12', mouth:'#a0644a', hat:'#2f7a2e', hatBand:'#3f8f3d', feather:'#d9403a', bow:'#8a5a2b', string:'#e8e0c8', shadow:'rgba(0,0,0,.25)'};
+const PAL_GHOST={tights:'#2a1f4a', boots:'#1a1233', tunic:'#4a2f8a', tunicDark:'#3a2470', belt:'#241a44', buckle:'#b79cff', quiver:'#2f2258', shaft:'#b79cff', skin:'#cbbaf0', hair:'#3a2a6a', eye:'#e8dcff', mouth:'#8a70c0', hat:'#3a2470', hatBand:'#4a2f8a', feather:'#d8b4ff', bow:'#5a3f9a', string:'#e8dcff', shadow:'rgba(80,40,160,.25)'};
+function drawArcherBody(x,y,draw,pal,quiverArrows){
+  // 以原始尺寸座標繪製弓手本體（不含箭）；縮放與鏡像由呼叫端處理
+  const hx=x+30, hy=y-10, sx=hx-24*draw;
+  ctx.fillStyle=pal.shadow; ellipse(x,y+64,32,6); ctx.fill();
+  ctx.fillStyle=pal.tights; ctx.fillRect(x-15,y+22,12,36); ctx.fillRect(x+3,y+22,12,36);
+  ctx.fillStyle=pal.boots; rrect(x-18,y+52,17,11,3); ctx.fill(); rrect(x+1,y+52,19,11,3); ctx.fill();
+  ctx.fillStyle=pal.tunic; ctx.beginPath(); ctx.moveTo(x-18,y-16); ctx.lineTo(x+18,y-16); ctx.lineTo(x+23,y+28); ctx.lineTo(x-23,y+28); ctx.closePath(); ctx.fill();
+  ctx.fillStyle=pal.tunicDark; ctx.beginPath(); ctx.moveTo(x-18,y-16); ctx.lineTo(x,y-16); ctx.lineTo(x-2,y+28); ctx.lineTo(x-23,y+28); ctx.closePath(); ctx.fill();
+  ctx.fillStyle=pal.belt; ctx.fillRect(x-22,y+8,44,7); ctx.fillStyle=pal.buckle; ctx.fillRect(x-4,y+7,8,9);
+  ctx.fillStyle=pal.quiver; ctx.save(); ctx.translate(x-20,y+4); ctx.rotate(-.35); rrect(-6,-30,12,48,4); ctx.fill();
+  ctx.strokeStyle=pal.shaft; ctx.lineWidth=2;
+  for(let i=0;i<Math.min(6,Math.ceil(quiverArrows/4));i++){ ctx.beginPath(); ctx.moveTo(-4+i*2,-30); ctx.lineTo(-4+i*2+(i%2?3:-2),-48); ctx.stroke(); }
+  ctx.restore();
+  ctx.strokeStyle=pal.tunic; ctx.lineWidth=9; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(x-8,y-8); ctx.lineTo(sx-2,hy+2); ctx.stroke();
+  ctx.strokeStyle=pal.skin; ctx.lineWidth=7; ctx.beginPath(); ctx.moveTo(sx-6,hy+1); ctx.lineTo(sx,hy); ctx.stroke();
+  ctx.fillStyle=pal.hair; ellipse(x-2,y-34,16,15); ctx.fill();
+  ctx.fillStyle=pal.skin; ellipse(x+2,y-32,14,15); ctx.fill();
+  ctx.fillStyle=pal.eye; ellipse(x+8,y-34,1.8,2.2); ctx.fill();
+  ctx.strokeStyle=pal.mouth; ctx.lineWidth=1.5; ctx.beginPath(); ctx.arc(x+8,y-27,4,0.2,Math.PI-0.4); ctx.stroke();
+  ctx.fillStyle=pal.hat; ctx.beginPath(); ctx.moveTo(x-20,y-43); ctx.lineTo(x+18,y-43); ctx.lineTo(x+6,y-70); ctx.closePath(); ctx.fill();
+  ctx.fillStyle=pal.hatBand; ctx.fillRect(x-22,y-46,42,5);
+  ctx.strokeStyle=pal.feather; ctx.lineWidth=3; ctx.beginPath(); ctx.moveTo(x+4,y-62); ctx.quadraticCurveTo(x+14,y-72,x+26,y-80); ctx.stroke();
+  ctx.strokeStyle=pal.tunic; ctx.lineWidth=9; ctx.beginPath(); ctx.moveTo(x+10,y-8); ctx.lineTo(hx-6,hy); ctx.stroke();
+  ctx.strokeStyle=pal.skin; ctx.lineWidth=7; ctx.beginPath(); ctx.moveTo(hx-8,hy); ctx.lineTo(hx,hy); ctx.stroke();
+  ctx.strokeStyle=pal.bow; ctx.lineWidth=5; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(hx,hy-42); ctx.quadraticCurveTo(hx+24-draw*6,hy,hx,hy+42); ctx.stroke();
+  ctx.strokeStyle=pal.string; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.moveTo(hx,hy-42); ctx.lineTo(sx,hy); ctx.lineTo(hx,hy+42); ctx.stroke();
+}
 function drawRobin(t){
-  const x=RX, y=RY, hx=x+30, hy=ARROW_Y;
-  const draw = G.charging ? Math.min(1, G.chargeT/STAGE_T[4]) : 0;
+  const x=RX, y=G.ry, hx=x+30;
+  const draw = G.charging ? Math.min(1, G.chargeT/STAGE_T[STAGE_T.length-1]) : 0;
   const sx = hx-24*draw;
   const bob = G.charging?0:Math.sin(t*2)*1.5;
-  ctx.save(); ctx.translate(0,bob);
-  ctx.fillStyle='rgba(0,0,0,.25)'; ellipse(x,y+64,32,6); ctx.fill();
-  // legs & boots
-  ctx.fillStyle='#6a4630'; ctx.fillRect(x-15,y+22,12,36); ctx.fillRect(x+3,y+22,12,36);
-  ctx.fillStyle='#3b2416'; rrect(x-18,y+52,17,11,3); ctx.fill(); rrect(x+1,y+52,19,11,3); ctx.fill();
-  // tunic
-  ctx.fillStyle='#3f8f3d'; ctx.beginPath(); ctx.moveTo(x-18,y-16); ctx.lineTo(x+18,y-16); ctx.lineTo(x+23,y+28); ctx.lineTo(x-23,y+28); ctx.closePath(); ctx.fill();
-  ctx.fillStyle='#2f7a2e'; ctx.beginPath(); ctx.moveTo(x-18,y-16); ctx.lineTo(x,y-16); ctx.lineTo(x-2,y+28); ctx.lineTo(x-23,y+28); ctx.closePath(); ctx.fill();
-  // belt
-  ctx.fillStyle='#5a3a1c'; ctx.fillRect(x-22,y+8,44,7); ctx.fillStyle='#e0b24a'; ctx.fillRect(x-4,y+7,8,9);
-  // quiver
-  ctx.fillStyle='#7a4a22'; ctx.save(); ctx.translate(x-20,y+4); ctx.rotate(-.35); rrect(-6,-30,12,48,4); ctx.fill();
-  ctx.strokeStyle='#d2a86c'; ctx.lineWidth=2;
-  for(let i=0;i<Math.min(6,Math.ceil(G.arrows/4));i++){ ctx.beginPath(); ctx.moveTo(-4+i*2,-30); ctx.lineTo(-4+i*2+(i%2?3:-2),-48); ctx.stroke(); }
+  ctx.save(); ctx.translate(x,y+bob*RS); ctx.scale(RS,RS); ctx.translate(-x,-y);
+  drawArcherBody(x,y,draw,PAL_ROBIN,G.arrows);
   ctx.restore();
-  // pulling arm (behind)
-  ctx.strokeStyle='#3f8f3d'; ctx.lineWidth=9; ctx.lineCap='round';
-  ctx.beginPath(); ctx.moveTo(x-8,y-8); ctx.lineTo(sx-2,hy+2); ctx.stroke();
-  ctx.strokeStyle='#f1c9a2'; ctx.lineWidth=7; ctx.beginPath(); ctx.moveTo(sx-6,hy+1); ctx.lineTo(sx,hy); ctx.stroke();
-  // head
-  ctx.fillStyle='#7a4a22'; ellipse(x-2,y-34,16,15); ctx.fill();
-  ctx.fillStyle='#f1c9a2'; ellipse(x+2,y-32,14,15); ctx.fill();
-  ctx.fillStyle='#2a1d12'; ellipse(x+8,y-34,1.8,2.2); ctx.fill();
-  ctx.strokeStyle='#a0644a'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.arc(x+8,y-27,4,0.2,Math.PI-0.4); ctx.stroke();
-  // hat
-  ctx.fillStyle='#2f7a2e'; ctx.beginPath(); ctx.moveTo(x-20,y-43); ctx.lineTo(x+18,y-43); ctx.lineTo(x+6,y-70); ctx.closePath(); ctx.fill();
-  ctx.fillStyle='#3f8f3d'; ctx.fillRect(x-22,y-46,42,5);
-  ctx.strokeStyle='#d9403a'; ctx.lineWidth=3; ctx.beginPath(); ctx.moveTo(x+4,y-62); ctx.quadraticCurveTo(x+14,y-72,x+26,y-80); ctx.stroke();
-  // bow arm (front)
-  ctx.strokeStyle='#3f8f3d'; ctx.lineWidth=9; ctx.beginPath(); ctx.moveTo(x+10,y-8); ctx.lineTo(hx-6,hy); ctx.stroke();
-  ctx.strokeStyle='#f1c9a2'; ctx.lineWidth=7; ctx.beginPath(); ctx.moveTo(hx-8,hy); ctx.lineTo(hx,hy); ctx.stroke();
-  // bow
-  ctx.strokeStyle='#8a5a2b'; ctx.lineWidth=5; ctx.lineCap='round';
-  ctx.beginPath(); ctx.moveTo(hx,hy-42); ctx.quadraticCurveTo(hx+24-draw*6,hy,hx,hy+42); ctx.stroke();
-  ctx.strokeStyle='#e8e0c8'; ctx.lineWidth=1.5;
-  ctx.beginPath(); ctx.moveTo(hx,hy-42); ctx.lineTo(sx,hy); ctx.lineTo(hx,hy+42); ctx.stroke();
-  if(G.charging){
-    const fake={x:sx,y:hy,len:50,stage:G.stage,trail:[],t:t};
-    if(G.stage>=2) drawArrowFX(fake,t); else drawArrowShape(sx,hy,50,G.stage,t,false);
+  // 以下用世界座標：箭維持原尺寸，起點對齊縮放後的弓手位置
+  const wsx = x+(sx-x)*RS, whx = x+(hx-x)*RS, why = AY();
+  if(G.armed){
+    const sk=SKILLS[G.armed], pul=.6+.4*Math.sin(t*8);
+    ctx.save(); ctx.globalAlpha=.35*pul+.15; ctx.fillStyle=sk.color; ctx.shadowColor=sk.color; ctx.shadowBlur=18;
+    ellipse(G.charging?wsx+25:whx+8, why, 14+4*pul, 14+4*pul); ctx.fill(); ctx.restore();
   }
+  if(G.charging) drawArrowShape(wsx,why,50,G.armed,G.stage);
+}
+function drawPhantom(b,t){
+  const draw=Math.max(0, Math.min(1, 1-b.t/1.0));              // 攻擊前一秒逐漸拉弓
+  const bob=Math.sin(b.bob*2)*2;
+  ctx.save();
+  ctx.translate(b.x, b.y+bob*RS);
+  ctx.globalAlpha=.82+.1*Math.sin(t*6);
+  ctx.shadowColor=b.flash>0?'#ffffff':'#9b6bff'; ctx.shadowBlur=b.flash>0?30:18;
+  ctx.scale(-RS,RS);                                             // 鏡像：面向左
+  drawArcherBody(0,0,draw,PAL_GHOST,20);
+  if(b.flash>0){ ctx.globalAlpha=b.flash*2; ctx.fillStyle='#ffffff'; ellipse(0,-5,30,70); ctx.fill(); }
   ctx.restore();
+  // 拉弓時顯示幻影之箭（世界座標，朝向羅賓漢）
+  if(draw>0.05){
+    const hx=b.x-30*RS, hy=b.y-10*RS;
+    const ang=Math.atan2((G.ry-8*RS)-hy, RX-hx);
+    const nx=hx-Math.cos(ang)*(50-24*RS*draw), ny=hy-Math.sin(ang)*(50-24*RS*draw);
+    const nextSkill=(b.count+1)%BOSS.skillEvery===0;
+    ctx.save(); ctx.translate(nx,ny); ctx.rotate(ang); drawArrowShape(0,0,50,null,0,true);
+    if(nextSkill){ ctx.globalAlpha=.5+.3*Math.sin(t*10); ctx.fillStyle='#d8b4ff'; ctx.shadowColor='#d8b4ff'; ctx.shadowBlur=16; ellipse(50,0,9,9); ctx.fill(); }
+    ctx.restore();
+  }
+  // 血條
+  const bw=240, bx=W/2-bw/2, by=54;
+  ctx.fillStyle='rgba(12,20,14,.6)'; rrect(bx-4,by-4,bw+8,22,8); ctx.fill();
+  ctx.fillStyle='#2a1f4a'; rrect(bx,by,bw,14,6); ctx.fill();
+  ctx.fillStyle='#9b6bff'; rrect(bx,by,bw*(b.hp/BOSS.hp),14,6); ctx.fill();
+  text('幻影羅賓漢  '+b.hp+' / '+BOSS.hp, W/2, by+7, 12, '#e8dcff', 'center', null, 700);
+}
+function drawNightBackground(t){
+  const sky=ctx.createLinearGradient(0,0,0,PLAY_B);
+  sky.addColorStop(0,'#070a1c'); sky.addColorStop(.6,'#1a1c4a'); sky.addColorStop(1,'#3a2a6a');
+  ctx.fillStyle=sky; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='rgba(255,255,255,.85)';
+  for(let i=0;i<70;i++){ const x=(i*233.7)%W, y=(i*97.3)%300; const tw=.5+.5*Math.sin(t*2+i); ctx.globalAlpha=.3+.6*tw; ctx.fillRect(x,y,2,2); }
+  ctx.globalAlpha=1;
+  // 月亮
+  ctx.save(); ctx.shadowColor='#e8ecff'; ctx.shadowBlur=40; ctx.fillStyle='#eef0ff'; ellipse(760,120,38,38); ctx.fill(); ctx.restore();
+  ctx.fillStyle='rgba(200,205,235,.35)'; ellipse(748,110,6,6); ctx.fill(); ellipse(772,132,9,9); ctx.fill();
+  const glow=ctx.createRadialGradient(760,120,40,760,120,260);
+  glow.addColorStop(0,'rgba(200,190,255,.25)'); glow.addColorStop(1,'rgba(200,190,255,0)');
+  ctx.fillStyle=glow; ctx.fillRect(0,0,W,PLAY_B);
+  ctx.fillStyle='#161a3a';
+  ctx.beginPath(); ctx.moveTo(0,420);
+  for(let x=0;x<=W;x+=40){ ctx.lineTo(x, 410-Math.sin(x*.011)*22-Math.cos(x*.03)*8); }
+  ctx.lineTo(W,PLAY_B); ctx.lineTo(0,PLAY_B); ctx.fill();
+  ctx.fillStyle='#0a0d22';
+  ctx.beginPath(); ctx.moveTo(0,PLAY_B);
+  for(let x=0;x<=W+30;x+=30){ const h=446-((x*7919)%37)-Math.sin(x*.05)*10; ctx.lineTo(x-15,h+22); ctx.lineTo(x,h); ctx.lineTo(x+15,h+22); }
+  ctx.lineTo(W,PLAY_B); ctx.fill();
+  const gr=ctx.createLinearGradient(0,444,0,PLAY_B);
+  gr.addColorStop(0,'#1e3a2a'); gr.addColorStop(1,'#0d1f16');
+  ctx.fillStyle=gr; ctx.fillRect(0,446,W,PLAY_B-446);
+  // 霧
+  for(let i=0;i<4;i++){ const x=((t*10+i*300)%(W+300))-150, y=400+i*12; ctx.fillStyle='rgba(180,170,240,.08)'; ellipse(x,y,160,18); ctx.fill(); }
+  ctx.fillStyle='#070a18'; ctx.fillRect(18,300,26,200);
+  ellipse(30,270,70,60); ctx.fill(); ellipse(75,300,50,45); ctx.fill(); ellipse(0,320,55,50); ctx.fill();
+  ctx.fillStyle='#1e4a2c'; ellipse(RX, G.ry+66*RS, 70*RS, 14*RS); ctx.fill();
+  ctx.fillStyle='#123320'; ellipse(RX, G.ry+70*RS, 62*RS, 8*RS); ctx.fill();
 }
 
 function drawBalloon(b){
@@ -516,23 +1164,39 @@ function drawTarget(tg,t){
     ctx.strokeStyle='rgba(0,0,0,.35)'; ctx.lineWidth=1; ctx.stroke();
   }
   // ring markers (10 at center)
-  ctx.font="700 9px Cinzel,serif"; ctx.textAlign='center'; ctx.textBaseline='middle';
-  for(let i=0;i<10;i+=1){ const r=R*(10-i)/10-R/20; ctx.fillStyle=(i>=2&&i<4)?'#eee':'#222'; if(i%2===0) ctx.fillText(String(i+1), x, y-r); }
-  if(G.stuck){ drawArrowShape(x-50, G.stuck.y, 50, G.stuck.stage, t, false); }
+  if(G.stuck){
+    if(G.stuck.fx==='light'){ ctx.shadowColor=SKILLS.light.color; ctx.shadowBlur=16; ctx.fillStyle='#fff8d0'; ellipse(x, G.stuck.y, 4, 4); ctx.fill(); ctx.shadowBlur=0; }
+    else { ctx.save(); ctx.translate(x, G.stuck.y); ctx.rotate(G.stuck.ang||0); drawArrowShape(-50, 0, 50, G.stuck.fx, 0); ctx.restore(); }
+  }
   ctx.restore();
 }
 
+function drawDrop(x,y,color){
+  ctx.save();
+  ctx.fillStyle=color; ctx.shadowColor='rgba(0,0,0,.5)'; ctx.shadowBlur=3;
+  ctx.beginPath(); ctx.moveTo(x,y-11);
+  ctx.bezierCurveTo(x+2,y-6, x+8,y-1, x+8,y+4);
+  ctx.arc(x,y+4,8,0,Math.PI,false);
+  ctx.bezierCurveTo(x-8,y-1, x-2,y-6, x,y-11); ctx.closePath(); ctx.fill();
+  ctx.shadowBlur=0; ctx.fillStyle='rgba(255,255,255,.45)'; ellipse(x-3,y+3,2,3.5); ctx.fill();
+  ctx.restore();
+}
 function drawHUD(t){
   ctx.fillStyle='rgba(18,26,22,.62)'; ctx.fillRect(0,0,W,44);
   ctx.fillStyle='rgba(242,227,192,.25)'; ctx.fillRect(0,44,W,1);
   text('第 '+G.level+' 關', 18, 22, 20, '#f2e3c0', 'left');
   text('/ '+LEVELS, 96, 23, 14, 'rgba(242,227,192,.6)', 'left', 'num');
   text('分數', 150, 22, 14, 'rgba(242,227,192,.7)', 'left');
+  if(isBanditLevel(G.level) && enemyKind(G.level)!=='boss' && (G.state==='play'||G.state==='result')){ text(ENEMY[enemyKind(G.level)].name, 300, 22, 14, 'rgba(242,227,192,.7)', 'left'); text('× '+(G.bandits.length+G.pool), 334, 23, 20, '#ffb35c', 'left', 'num', 900); }
   text(String(G.score), 190, 23, 22, '#ffe066', 'left', 'num', 900);
   text(fmtTime(G.time), W/2, 23, 22, '#f2e3c0', 'center', 'num', 900);
+  // hp
+  const hx=W-300;
+  drawDrop(hx, 22, G.hurtT>0 && Math.floor(G.t*16)%2===0 ? '#fff' : '#e0453b');
+  text('× '+G.hp, hx+14, 23, 22, G.hp<=3?'#ff9a7a':'#f2e3c0', 'left', 'num', 900);
   // arrows
   const ax=W-170;
-  ctx.save(); ctx.translate(ax-40,22); drawArrowShape(0,0,34,0,t,false); ctx.restore();
+  ctx.save(); ctx.translate(ax-40,22); drawArrowShape(0,0,34,null,0); ctx.restore();
   text('× '+G.arrows, ax+8, 23, 22, G.arrows>0?'#f2e3c0':'#ff9a7a', 'left', 'num', 900);
   if(G.arrows===0 && G.state==='play') text('每 100 分換 1 箭', ax+8, 60, 14, '#ffb35c', 'left');
   // mute
@@ -547,35 +1211,31 @@ function drawButton(t){
   const {x,y,r}=BTN;
   ctx.save();
   // stage ring segments
-  const span=Math.PI*1.5, start=Math.PI*.75, gap=.06;
-  for(let i=0;i<5;i++){
-    const a0=start+i*(span/5)+gap/2, a1=start+(i+1)*(span/5)-gap/2;
+  const span=Math.PI*1.5, start=Math.PI*.75, gap=.08;
+  const N=STAGES.length;
+  for(let i=0;i<N;i++){
+    const a0=start+i*(span/N)+gap/2, a1=start+(i+1)*(span/N)-gap/2;
     const lit=G.charging && G.stage>=i;
-    ctx.strokeStyle=lit?STAGES[i].color:'rgba(242,227,192,.22)'; ctx.lineWidth=9; ctx.lineCap='butt';
-    if(lit&&i>=2){ ctx.shadowColor=STAGES[i].color; ctx.shadowBlur=14; } else ctx.shadowBlur=0;
-    ctx.beginPath(); ctx.arc(x,y,r+14,a0,a1); ctx.stroke();
+    ctx.strokeStyle=lit?STAGES[i].color:'rgba(242,227,192,.22)'; ctx.lineWidth=6; ctx.lineCap='butt';
+    if(lit&&i===N-1){ ctx.shadowColor=STAGES[i].color; ctx.shadowBlur=12; } else ctx.shadowBlur=0;
+    ctx.beginPath(); ctx.arc(x,y,r+7,a0,a1); ctx.stroke();
   }
   ctx.shadowBlur=0;
   // wooden disc
   const pressed=G.charging;
-  const g=ctx.createRadialGradient(x-14,y-16,6,x,y,r);
+  const g=ctx.createRadialGradient(x-7,y-8,3,x,y,r);
   g.addColorStop(0,pressed?'#9a6535':'#b2773f'); g.addColorStop(1,pressed?'#4a2a12':'#5d3518');
-  ctx.fillStyle='rgba(0,0,0,.35)'; ellipse(x+4,y+6,r,r); ctx.fill();
+  ctx.fillStyle='rgba(0,0,0,.35)'; ellipse(x+2,y+3,r,r); ctx.fill();
   ctx.fillStyle=g; ellipse(x,y,r,r); ctx.fill();
-  ctx.strokeStyle='#e0b24a'; ctx.lineWidth=3; ellipse(x,y,r-6,r-6); ctx.stroke();
-  // bow glyph
+  ctx.strokeStyle='#e0b24a'; ctx.lineWidth=2; ellipse(x,y,r-3,r-3); ctx.stroke();
+  // bow glyph（原尺寸的一半）
+  ctx.save(); ctx.translate(x,y); ctx.scale(.5,.5);
   ctx.strokeStyle='#f2e3c0'; ctx.lineWidth=3; ctx.lineCap='round';
-  const pull=G.charging?Math.min(1,G.chargeT/STAGE_T[4]):0;
-  ctx.beginPath(); ctx.moveTo(x+6,y-30); ctx.quadraticCurveTo(x+22,y-8,x+6,y+14); ctx.stroke();
-  ctx.lineWidth=1.5; ctx.beginPath(); ctx.moveTo(x+6,y-30); ctx.lineTo(x-4-pull*14,y-8); ctx.lineTo(x+6,y+14); ctx.stroke();
-  ctx.lineWidth=2.5; ctx.beginPath(); ctx.moveTo(x-4-pull*14,y-8); ctx.lineTo(x+26,y-8); ctx.stroke();
-  text(G.charging?'放開射箭':'按住拉弓', x, y+34, 15, '#f2e3c0', 'center', null, 900);
-  // stage label
-  if(G.charging){
-    const st=STAGES[G.stage];
-    text('第 '+(G.stage+1)+' 階', x, y-r-40, 16, 'rgba(242,227,192,.85)', 'center');
-    text(st.name, x, y-r-64, 22, st.color, 'center', null, 900);
-  }
+  const pull=G.charging?Math.min(1,G.chargeT/STAGE_T[STAGE_T.length-1]):0;
+  ctx.beginPath(); ctx.moveTo(2,-26); ctx.quadraticCurveTo(18,0,2,26); ctx.stroke();
+  ctx.lineWidth=1.5; ctx.beginPath(); ctx.moveTo(2,-26); ctx.lineTo(-8-pull*14,0); ctx.lineTo(2,26); ctx.stroke();
+  ctx.lineWidth=2.5; ctx.beginPath(); ctx.moveTo(-8-pull*14,0); ctx.lineTo(24,0); ctx.stroke();
+  ctx.restore();
   ctx.restore();
 }
 
@@ -596,8 +1256,13 @@ function draw(t){
   drawBackground(t);
   if(G.state==='play'||G.state==='result'){
     for(const b of G.balloons) drawBalloon(b);
+    for(const b of G.bandits){ if(b.kind==='wisp') drawWisp(b,t); else drawBandit(b,t); }
+    for(const bl of G.blades){ if(bl.type==='fire') drawFireball(bl); else drawBlade(bl); }
+    if(G.boss) drawPhantom(G.boss,t);
+    for(const g of G.ghostArrows) drawArrowFX(g,t);
     if(G.target) drawTarget(G.target,t);
     for(const a of G.flying) if(!a.done) drawArrowFX(a,t);
+    drawBeams(t);
   } else {
     for(const b of G.ambient) drawBalloon(b);
   }
@@ -608,20 +1273,22 @@ function draw(t){
   ctx.globalAlpha=1;
 
   if(G.state==='play'||G.state==='result'){
-    drawHUD(t); drawButton(t);
+    if(G.hurtT>0){ ctx.fillStyle='rgba(224,69,59,'+(G.hurtT*.5)+')'; ctx.fillRect(0,0,W,H); }
+    drawBar(); drawHUD(t); drawButton(t); drawSkills(t);
     if(G.levelIntroT>0 && G.state==='play'){
       const k=Math.min(1,G.levelIntroT/.5); ctx.globalAlpha=k;
       ctx.shadowColor='rgba(0,0,0,.7)'; ctx.shadowBlur=14;
       text('第 '+G.level+' 關', W/2, H/2-70, 54, '#f2e3c0', 'center', null, 900);
-      text((10+5*(G.level-1))+' 顆氣球', W/2, H/2-22, 22, '#ffe066', 'center');
+      text(enemyKind(G.level)==='boss'?'最終關 ・ '+ENEMY.boss.scene+' ・ '+ENEMY.boss.name:(isBanditLevel(G.level)?ENEMY[enemyKind(G.level)].scene+' ・ '+ENEMY[enemyKind(G.level)].name+' '+banditTotal(G.level)+' '+ENEMY[enemyKind(G.level)].unit:(10+5*(G.level-1))+' 顆氣球'), W/2, H/2-22, 22, '#ffe066', 'center');
       ctx.shadowBlur=0; ctx.globalAlpha=1;
     }
     if(G.state==='result'&&G.result){
-      const r=G.result, k=Math.min(1,(2.4-G.resultT)/.25);
+      const r=G.result, k=Math.min(1,(2.4-Math.min(2.4,G.resultT))/.25);
       ctx.save(); ctx.translate(W/2,H/2-30); ctx.scale(.7+.3*k,.7+.3*k); ctx.globalAlpha=k;
       ctx.fillStyle='rgba(12,20,14,.78)'; rrect(-200,-70,400,140,16); ctx.fill();
       ctx.strokeStyle=r.ring>=9?'#f4c430':'#f2e3c0'; ctx.lineWidth=3; rrect(-200,-70,400,140,16); ctx.stroke();
-      text(r.ring>=10?'十環！正中靶心':'第 '+r.ring+' 環', 0, -30, 34, r.ring>=9?'#ffe066':'#f2e3c0', 'center', null, 900);
+      if(r.boss){ ctx.strokeStyle='#d8b4ff'; rrect(-200,-70,400,140,16); ctx.stroke(); text('幻影消散', 0, -30, 34, '#e8dcff', 'center', null, 900); }
+      else text(r.ring>=10?'十環！正中靶心':'第 '+r.ring+' 環', 0, -30, 34, r.ring>=9?'#ffe066':'#f2e3c0', 'center', null, 900);
       text('獎勵 +'+r.reward, 0, 14, 26, '#ffe066', 'center', 'num', 900);
       text(G.level>=LEVELS?'全部關卡完成！':'進入第 '+(G.level+1)+' 關', 0, 48, 16, 'rgba(242,227,192,.8)', 'center');
       ctx.restore();
@@ -633,12 +1300,15 @@ function draw(t){
     ctx.shadowBlur=0;
     text('ROBIN HOOD · SHERWOOD BALLOONS', W/2, 138, 14, '#ffe066', 'center', 'num');
     const lines=[
-      '按住右下角的按鈕拉弓，放開射箭；按得越久，箭越快，共 5 階。',
-      '第 3 階起箭矢會纏繞風、雷、光的力量。一箭可以連續穿破多顆氣球，穿越越多加分越多。',
-      '氣球分數：紅 10 ・ 藍 20 ・ 綠 30 ・ 黃 50。氣球射完後標靶出現，射中越接近靶心，獎勵越高。',
-      '初始 20 支箭，每過一關補 20 支；箭用完時每 100 分可換 1 支。全部 10 關通過後才會登錄紀錄。',
+      '按住右下角的按鈕拉弓，放開射箭；按得越久箭越快，共 3 階。按住羅賓漢可以上下拖移。一箭可連續穿破多個目標，穿越越多加分越多。',
+      '左下角三個技能：按一下為下一箭「附魔」，再按取消、按別的切換；射出時才消耗技能珠，三個技能每關共用 5 顆。',
+      '風 同時射出三箭（0° 與上下 15°）、雷 極速且判定加寬為兩箭寬、光 瞬間貫穿整條射線。',
+      '第 1～10 關：氣球分數 紅 10 ・ 藍 20 ・ 綠 30 ・ 黃 50。目標清空後小標靶出現，越接近靶心獎勵越高。',
+      '第 11～15 關：森林起火，山賊從右側投擲旋轉大刀；第 16～20 關：火熄後的灰燼森林，鬼火吐出帶焰尾的火球。被擊中扣 1 點血，飛來的刀與火球都能射掉。',
+      '最終關：月夜的雪伍德，幻影羅賓漢（10 點血）每 3 秒放箭、每第 3 箭改用風或雷；他的箭可以被射掉，但我方的箭無法穿透它。',
+      '一箭擊倒一名敵人得 100 分。初始 20 支箭，每過一關補 10 支並回復 1 點血；箭用完時每 100 分可換 1 支。全部 '+LEVELS+' 關通過後才會登錄紀錄。',
     ];
-    lines.forEach((l,i)=>text(l, W/2, 190+i*30, 16, 'rgba(242,227,192,.92)', 'center', null, 500));
+    lines.forEach((l,i)=>text(l, W/2, 170+i*23, 13, 'rgba(242,227,192,.92)', 'center', null, 500));
     if(G.best){
       ctx.fillStyle='rgba(242,227,192,.12)'; rrect(W/2-210,318,420,56,12); ctx.fill();
       text('最佳紀錄', W/2-170, 346, 15, '#ffe066', 'left');
@@ -659,15 +1329,15 @@ function draw(t){
     }
     text(hint, W/2-(canFS?70:0), H-40, 13, 'rgba(242,227,192,.65)', 'center');
   } else if(G.state==='gameover'){
-    drawOverlayCard('箭矢用盡', '#b83a2e', [
-      {t:G.gameOverReason+'，分數不足以換箭。'},
+    drawOverlayCard(G.gameOverTitle||'遊戲結束', '#b83a2e', [
+      {t:G.gameOverReason},
       {t:'抵達第 '+G.level+' 關 ・ 用時 '+fmtTime(G.time), s:18},
       {t:String(G.score)+' 分', s:34, c:'#6b3f1f', f:'num', w:900},
-      {t:'紀錄僅在通過全部 10 關時登錄。', s:14, c:'#6b5a44'},
+      {t:'紀錄僅在通過全部 '+LEVELS+' 關時登錄。', s:14, c:'#6b5a44'},
     ], '再試一次');
   } else if(G.state==='victory'){
     const lines=[
-      {t:'雪伍德森林的每一顆氣球都已射落。'},
+      {t:'氣球全數射落，山賊、鬼火與幻影都已從雪伍德森林散去。'},
       {t:String(G.score)+' 分 ・ 用時 '+fmtTime(G.time), s:30, c:'#6b3f1f', f:'num', w:900},
     ];
     if(G.newRecord) lines.push({t:'新紀錄！', s:22, c:'#b8860b', w:900});
