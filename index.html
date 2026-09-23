@@ -153,10 +153,13 @@ const G={
   hp:MAX_HP, hurtT:0,
   bandits:[], blades:[], pool:0, spawnT:0,
   boss:null, ghostArrows:[],
-  orbs:ORBS, armed:null, ry:RY0, drag:null, chargeId:null,
+  startLevel:1, testRun:false,
+  orbs:ORBS, armed:null, ry:RY_MAX, drag:null, chargeId:null,   // 標題畫面先站在地面，避免擋到說明文字
 };
 function AY(){ return G.ry-10*RS; }   // 箭的水平射線高度（隨羅賓漢縮放）
 function refillOrbs(){ G.orbs=ORBS; }
+// 測試用：網址加 ?level=N 可從第 N 關開始；標題畫面左下也有選關鈕。非從第 1 關開始的回合不登錄紀錄。
+try{ const q=parseInt(new URLSearchParams(location.search).get('level'),10); if(q>=1 && q<=LEVELS) G.startLevel=q; }catch(e){}
 try{ const b=localStorage.getItem('robin_best'); if(b) G.best=JSON.parse(b); }catch(e){}
 function saveBest(){ try{ localStorage.setItem('robin_best', JSON.stringify(G.best)); }catch(e){} }
 
@@ -201,9 +204,11 @@ function spawnLevel(lv){
   G.balloons=list; G.target=null; G.stuck=null; G.levelIntroT=1.8;
 }
 function startGame(){
-  G.level=1; G.score=0; G.arrows=START_ARROWS; G.hp=MAX_HP; G.hurtT=0; G.time=0; G.flying=[]; G.particles=[]; G.popups=[]; G.beams=[];
+  G.level=G.startLevel; G.testRun=G.startLevel>1;
+  G.score=0; G.arrows=START_ARROWS; G.hp=MAX_HP; G.hurtT=0; G.time=0; G.flying=[]; G.particles=[]; G.popups=[]; G.beams=[];
   G.charging=false; G.chargeT=0; G.stage=0; G.newRecord=false; G.result=null; G.armed=null; G.ry=RY0; G.drag=null; refillOrbs();
-  spawnLevel(1); G.state='play';
+  spawnLevel(G.level); G.state='play';
+  if(G.testRun) addPopup(W/2, H/2+40, '測試模式：從第 '+G.level+' 關開始，本回合不登錄紀錄', '#ffb35c', 2.5, 18);
   if(canFS && !isFS() && !isStandalone()) enterFS();
 }
 function nextLevel(){
@@ -236,6 +241,7 @@ function inRect(p,r){ return p.x>=r.x&&p.x<=r.x+r.w&&p.y>=r.y&&p.y<=r.y+r.h; }
 const startBtn={x:W/2-120, y:H-118, w:240, h:58};
 const muteBtn={x:W-46, y:6, w:40, h:32};
 const fsBtn={x:W-172, y:H-58, w:150, h:40};
+const lvDec={x:22, y:H-58, w:40, h:40}, lvInc={x:150, y:H-58, w:40, h:40};   // 標題畫面的選關鈕（測試用）
 
 /* ---------- fullscreen / standalone ---------- */
 const isIOS=/iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
@@ -524,6 +530,8 @@ cv.addEventListener('pointerdown', e=>{
   if(inRect(p,muteBtn)){ muted=!muted; try{localStorage.setItem('robin_muted',muted?'1':'0');}catch(err){} return; }
   if(isMenu()){
     // 觸控的 pointerdown 不算「使用者啟動」，全螢幕請求必須等到 pointerup 才會被瀏覧器接受
+    if(G.state==='title' && inRect(p,lvDec)){ G.startLevel=Math.max(1,G.startLevel-1); tone(400,400,.05,'triangle',.05); return; }
+    if(G.state==='title' && inRect(p,lvInc)){ G.startLevel=Math.min(LEVELS,G.startLevel+1); tone(500,500,.05,'triangle',.05); return; }
     menuDown = (canFS && inRect(p,fsBtn)) ? 'fs' : (inRect(p,startBtn) ? 'start' : null);
     return;
   }
@@ -664,7 +672,7 @@ function update(dt){
       if(G.level>=LEVELS){
         const rec={score:G.score, time:G.time, date:Date.now()};
         const b=G.best;
-        if(!b || rec.score>b.score || (rec.score===b.score && rec.time<b.time)){ G.best=rec; G.newRecord=true; saveBest(); }
+        if(!G.testRun && (!b || rec.score>b.score || (rec.score===b.score && rec.time<b.time))){ G.best=rec; G.newRecord=true; saveBest(); }
         G.state='victory'; sfx.win();
       } else nextLevel();
     }
@@ -1300,15 +1308,14 @@ function draw(t){
     ctx.shadowBlur=0;
     text('ROBIN HOOD · SHERWOOD BALLOONS', W/2, 138, 14, '#ffe066', 'center', 'num');
     const lines=[
-      '按住右下角的按鈕拉弓，放開射箭；按得越久箭越快，共 3 階。按住羅賓漢可以上下拖移。一箭可連續穿破多個目標，穿越越多加分越多。',
-      '左下角三個技能：按一下為下一箭「附魔」，再按取消、按別的切換；射出時才消耗技能珠，三個技能每關共用 5 顆。',
-      '風 同時射出三箭（0° 與上下 15°）、雷 極速且判定加寬為兩箭寬、光 瞬間貫穿整條射線。',
-      '第 1～10 關：氣球分數 紅 10 ・ 藍 20 ・ 綠 30 ・ 黃 50。目標清空後小標靶出現，越接近靶心獎勵越高。',
-      '第 11～15 關：森林起火，山賊從右側投擲旋轉大刀；第 16～20 關：火熄後的灰燼森林，鬼火吐出帶焰尾的火球。被擊中扣 1 點血，飛來的刀與火球都能射掉。',
-      '最終關：月夜的雪伍德，幻影羅賓漢（10 點血）每 3 秒放箭、每第 3 箭改用風或雷；他的箭可以被射掉，但我方的箭無法穿透它。',
-      '一箭擊倒一名敵人得 100 分。初始 20 支箭，每過一關補 10 支並回復 1 點血；箭用完時每 100 分可換 1 支。全部 '+LEVELS+' 關通過後才會登錄紀錄。',
+      '按住右下角按鈕拉弓、放開射箭，共 3 階；按住羅賓漢可上下拖移；一箭可連穿多個目標，穿越越多加分越多。',
+      '左下角技能：按一下為下一箭附魔，再按取消、按別的切換；射出時才消耗技能珠，三個技能每關共用 5 顆。',
+      '風：三箭齊發（0°、±15°）　雷：極速且判定加寬為兩箭寬　光：瞬間貫穿整條射線',
+      '1～10 關 氣球（紅 10・藍 20・綠 30・黃 50）　11～15 關 燃燒森林的山賊　16～20 關 灰燼森林的鬼火',
+      '最終關：月夜的幻影羅賓漢，10 點血、每 3 秒放箭、每第 3 箭改用風或雷；他的箭可以射掉，但無法穿透。',
+      '被擊中扣 1 血；擊倒敵人得 100 分。初始 20 箭，每關補 10 箭並回 1 血；沒箭時每 100 分換 1 支。通過全部 '+LEVELS+' 關才登錄紀錄。',
     ];
-    lines.forEach((l,i)=>text(l, W/2, 170+i*23, 13, 'rgba(242,227,192,.92)', 'center', null, 500));
+    lines.forEach((l,i)=>text(l, W/2+30, 178+i*26, 13, 'rgba(242,227,192,.92)', 'center', null, 500));
     if(G.best){
       ctx.fillStyle='rgba(242,227,192,.12)'; rrect(W/2-210,318,420,56,12); ctx.fill();
       text('最佳紀錄', W/2-170, 346, 15, '#ffe066', 'left');
@@ -1318,6 +1325,14 @@ function draw(t){
       text('尚無通關紀錄，成為第一位射穿雪伍德森林的人。', W/2, 346, 15, 'rgba(242,227,192,.7)', 'center');
     }
     startBtn.y=H-118;
+    // 選關（測試用）
+    ctx.save();
+    ctx.fillStyle='rgba(12,20,14,.55)'; rrect(lvDec.x,lvDec.y,lvInc.x+lvInc.w-lvDec.x,40,20); ctx.fill();
+    ctx.strokeStyle='rgba(242,227,192,.6)'; ctx.lineWidth=1.5; rrect(lvDec.x,lvDec.y,lvInc.x+lvInc.w-lvDec.x,40,20); ctx.stroke();
+    text('◀', lvDec.x+20, lvDec.y+21, 16, G.startLevel>1?'#f2e3c0':'rgba(242,227,192,.3)', 'center');
+    text('▶', lvInc.x+20, lvInc.y+21, 16, G.startLevel<LEVELS?'#f2e3c0':'rgba(242,227,192,.3)', 'center');
+    text('起始 第 '+G.startLevel+' 關', (lvDec.x+lvInc.x+lvInc.w)/2, lvDec.y+21, 14, G.startLevel>1?'#ffb35c':'#f2e3c0', 'center', null, 700);
+    ctx.restore();
     ctx.fillStyle='#2f7a2e'; rrect(startBtn.x,startBtn.y,startBtn.w,startBtn.h,29); ctx.fill();
     ctx.strokeStyle='#ffe066'; ctx.lineWidth=2; rrect(startBtn.x+3,startBtn.y+3,startBtn.w-6,startBtn.h-6,26); ctx.stroke();
     text('開始遊戲', W/2, startBtn.y+startBtn.h/2+1, 24, '#fffbe8', 'center', null, 900);
@@ -1340,7 +1355,8 @@ function draw(t){
       {t:'氣球全數射落，山賊、鬼火與幻影都已從雪伍德森林散去。'},
       {t:String(G.score)+' 分 ・ 用時 '+fmtTime(G.time), s:30, c:'#6b3f1f', f:'num', w:900},
     ];
-    if(G.newRecord) lines.push({t:'新紀錄！', s:22, c:'#b8860b', w:900});
+    if(G.testRun) lines.push({t:'測試模式（從第 '+G.startLevel+' 關開始），不登錄紀錄。', s:14, c:'#6b5a44'});
+    else if(G.newRecord) lines.push({t:'新紀錄！', s:22, c:'#b8860b', w:900});
     else if(G.best) lines.push({t:'最佳紀錄：'+G.best.score+' 分 ・ '+fmtTime(G.best.time)+'（同分以用時較短者為準）', s:15, c:'#6b5a44'});
     drawOverlayCard('全數通關', '#2f7a2e', lines, '再玩一次');
   }
